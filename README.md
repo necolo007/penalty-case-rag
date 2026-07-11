@@ -38,7 +38,7 @@ make worker     # arq 文档解析 worker
 python scripts/batch_ingest.py --dir data/raw
 ```
 
-### WSL / Docker 全栈（含 OCR）
+### WSL / Docker（含 OCR）
 
 在 WSL2 中推荐用 Docker 跑 MinerU + PaddleOCR（Windows 本机难以安装 parsing 栈）：
 
@@ -60,26 +60,41 @@ docker compose run --rm worker python scripts/test_ocr.py /app/uploads/your_scan
 > 无需 OCR 时用轻量 Worker：`docker compose --profile lite up -d worker-lite`
 > 有 NVIDIA GPU 时：`docker compose --profile gpu up -d worker-gpu`
 
-> **注意**：`pgvector/pgvector:pg16` 镜像不含 zhparser 扩展，生产部署请使用包含
-> zhparser 的自建镜像，或在容器内编译安装（SCWS + zhparser）。
+> **注意**：默认 Postgres 使用 `Dockerfile.postgres`（pgvector + zhparser）。
+> 构建：`docker compose build postgres`；`.env` 建议 `REQUIRE_ZHPARSER=true` 禁止降级。
+
+### Postgres 启用 zhparser（中文 BM25，不降级）
+
+`pgvector/pgvector:pg16` 官方镜像不含 zhparser。项目已提供 `Dockerfile.postgres` 在 pgvector 基础上编译 SCWS + zhparser：
+
+```powershell
+# 1. .env 中强制要求 zhparser（可选但推荐）
+# REQUIRE_ZHPARSER=true
+
+# 2. 构建镜像（首次约 3–5 分钟）
+docker compose build postgres
+
+# 3. 若之前用过 simple 降级，需清空旧数据卷后重建
+docker compose down -v
+docker compose up -d postgres redis
+
+# 4. 验证扩展
+docker exec penalty-case-rag-postgres-1 psql -U kb_admin -d penalty_kb -c `
+  "CREATE EXTENSION IF NOT EXISTS zhparser; SELECT extname FROM pg_extension WHERE extname IN ('vector','zhparser');"
+
+# 5. 启动本地 API（AutoMigrate 会自动创建 zhparser_config）
+uv run --no-sync uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+验证中文分词：
+
+```sql
+SELECT * FROM ts_parse('zhparser', '销售误导 给予合同外利益');
+```
+
+日志中应出现：`Text search config: zhparser_config (zhparser)`，而不是 simple fallback。
 
 完整路由见 `http://localhost:8000/docs`（Swagger UI）。
-
-## 比赛提交流水线
-
-```bash
-# 生成提交文件
-make submission
-
-# 本地评测（需 gold 标签）
-make eval
-
-# 一键导出全部交付物（manifest / candidates / gold / 标签字典 / 主体关联）
-make export
-
-# 样本增强：反向生成检索训练 query
-python scripts/data_augmentation.py --limit 100
-```
 
 ## 开发说明
 

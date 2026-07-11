@@ -4,7 +4,7 @@ API / Worker 首次连接 PostgreSQL 时自动执行：
   1. db/migrations/001_*.sql — 扩展、表、索引、触发器
   2. db/migrations/002_*.sql — 种子数据（仅库为空时写入）
 
-无需手动运行 scripts/setup_db.py；该脚本保留为可选调试入口。
+无需手动 run scripts/setup_db.py；该脚本保留为可选调试入口。
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ import logging
 from pathlib import Path
 
 import asyncpg
+
+from core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +25,104 @@ def _sorted_sql(pattern: str) -> list[Path]:
     return sorted(MIGRATIONS_DIR.glob(pattern))
 
 
+async def _has_zhparser_extension(conn: asyncpg.Connection) -> bool:
+    return await conn.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'zhparser')"
+    )
+
+
+async def _ts_config_parser(conn: asyncpg.Connection, cfgname: str) -> str | None:
+    return await conn.fetchval(
+        """
+        SELECT p.prsname
+        FROM pg_ts_config c
+        JOIN pg_ts_parser p ON c.cfgparser = p.oid
+        WHERE c.cfgname = $1
+        """,
+        cfgname,
+    )
+
+
+async def _create_zhparser_config(conn: asyncpg.Connection) -> None:
+    await conn.execute("CREATE EXTENSION IF NOT EXISTS zhparser;")
+    await conn.execute(
+        """
+        CREATE TEXT SEARCH CONFIGURATION zhparser_config (PARSER = zhparser);
+        ALTER TEXT SEARCH CONFIGURATION zhparser_config
+            ADD MAPPING FOR n,v,a,i,e,l WITH SIMPLE;
+        """
+    )
+    logger.info("Text search config: zhparser_config (zhparser)")
+
+
+async def _recreate_search_trigger(conn: asyncpg.Connection) -> None:
+    """切换分词配置后重建触发器，并刷新已有案例 search_vector。"""
+    await conn.execute(
+        """
+        CREATE OR REPLACE FUNCTION cases_search_vector_update() RETURNS trigger AS $$
+        BEGIN
+            NEW.search_vector :=
+                to_tsvector('zhparser_config',
+                    coalesce(NEW.violation_behavior, '') || ' ' ||
+                    coalesce(NEW.penalty_content, '') || ' ' ||
+                    coalesce(NEW.party_name, ''));
+            RETURN NEW;
+        END
+        $$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS trg_cases_search_vector ON penalty_cases;
+        CREATE TRIGGER trg_cases_search_vector
+            BEFORE INSERT OR UPDATE OF violation_behavior, penalty_content, party_name
+            ON penalty_cases
+            FOR EACH ROW EXECUTE FUNCTION cases_search_vector_update();
+        """
+    )
+    has_cases = await conn.fetchval("SELECT to_regclass('public.penalty_cases') IS NOT NULL")
+    if has_cases:
+        await conn.execute("UPDATE penalty_cases SET violation_behavior = violation_behavior")
+
+
+async def _ensure_text_search_config(conn: asyncpg.Connection) -> None:
+    """创建 zhparser_config；有 zhparser 用中文分词，否则按 REQUIRE_ZHPARSER 决定降级或失败。"""
+    settings = get_settings()
+    has_zhparser = await _has_zhparser_extension(conn)
+    parser = await _ts_config_parser(conn, "zhparser_config")
+
+    if has_zhparser:
+        if parser == "zhparser":
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS zhparser;")
+            return
+
+        if parser is not None:
+            logger.info("Upgrading zhparser_config from %s to zhparser", parser)
+            await conn.execute("DROP TEXT SEARCH CONFIGURATION IF EXISTS zhparser_config CASCADE;")
+
+        await _create_zhparser_config(conn)
+        await _recreate_search_trigger(conn)
+        return
+
+    if settings.REQUIRE_ZHPARSER:
+        raise RuntimeError(
+            "REQUIRE_ZHPARSER=true but extension zhparser is not available. "
+            "Build postgres with: docker compose build postgres"
+        )
+
+    if parser is not None:
+        return
+
+    await conn.execute(
+        "CREATE TEXT SEARCH CONFIGURATION zhparser_config (COPY = pg_catalog.simple);"
+    )
+    logger.warning(
+        "zhparser not available; BM25 uses simple fallback. "
+        "Use Dockerfile.postgres or set REQUIRE_ZHPARSER=true to enforce zhparser."
+    )
+
+
 async def auto_migrate(conn: asyncpg.Connection) -> None:
     """对单连接执行 schema + 条件种子。可安全重复调用。"""
+    await _ensure_text_search_config(conn)
+
     for path in _sorted_sql("001_*.sql"):
         logger.info("AutoMigrate: applying schema %s", path.name)
         await conn.execute(path.read_text(encoding="utf-8"))

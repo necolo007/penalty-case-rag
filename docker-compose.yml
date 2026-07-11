@@ -1,7 +1,10 @@
 services:
-  # PostgreSQL + pgvector（需 zhparser：使用含 zhparser 的镜像或自行构建）
+  # PostgreSQL + pgvector + zhparser（本地 build，见 Dockerfile.postgres）
   postgres:
-    image: pgvector/pgvector:pg16
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    image: penalty-case-rag-postgres:pg16-zhparser
     environment:
       POSTGRES_DB: penalty_kb
       POSTGRES_USER: kb_admin
@@ -19,7 +22,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "6534:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

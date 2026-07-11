@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://kb_admin:change-me@localhost:5432/penalty_kb"
     REDIS_URL: str = "redis://localhost:6379"
     AUTO_MIGRATE: bool = True  # 启动时自动建表/种子（GORM AutoMigrate 风格）
+    REQUIRE_ZHPARSER: bool = False  # true 时无 zhparser 扩展则启动失败（不降级 simple）
 
     # ---- LLM（DeepSeek-V4-Flash） ----
     LLM_API_KEY: str = ""

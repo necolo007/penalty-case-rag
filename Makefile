@@ -35,6 +35,12 @@ eval:
 docker-up:
 	docker compose up -d postgres redis api worker
 
+docker-postgres-build:
+	docker compose build postgres
+
+docker-postgres-up:
+	docker compose up -d postgres redis
+
 docker-ocr-build:
 	docker compose build worker
 

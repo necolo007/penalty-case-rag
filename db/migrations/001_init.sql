@@ -1,21 +1,9 @@
 -- 保险监管处罚案例知识库 初始化 Schema
--- 依赖扩展：uuid-ossp / vector(pgvector) / zhparser
+-- 依赖扩展：uuid-ossp / vector(pgvector)
+-- zhparser 全文配置由 db/automigrate.py 按环境自动创建（有 zhparser 用中文分词，否则降级 simple）
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "vector";
-CREATE EXTENSION IF NOT EXISTS "zhparser";
-
--- 中文全文搜索配置
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_ts_config WHERE cfgname = 'zhparser_config'
-    ) THEN
-        CREATE TEXT SEARCH CONFIGURATION zhparser_config (PARSER = zhparser);
-        ALTER TEXT SEARCH CONFIGURATION zhparser_config
-            ADD MAPPING FOR n,v,a,i,e,l WITH SIMPLE;
-    END IF;
-END $$;
 
 
 -- 1. 原始文档表
