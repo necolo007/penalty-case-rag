@@ -1,0 +1,45 @@
+# Worker + MinerU/PaddleOCR（Linux/WSL Docker 测试用）
+# CPU 即可跑 OCR；有 NVIDIA GPU 时可配合 docker-compose 的 gpu profile 加速 MinerU
+
+FROM python:3.11-bookworm
+
+WORKDIR /app
+
+# OpenCV / Paddle / Poppler（PDF 转图像）运行时依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libgl1 \
+    libgles2-mesa-dev \
+    libfontconfig1 \
+    poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md ./
+COPY core ./core
+COPY engine ./engine
+COPY pipeline ./pipeline
+COPY api ./api
+COPY scripts ./scripts
+COPY db ./db
+
+# 1) 基础依赖  2) Linux CPU 版 PaddlePaddle  3) parsing 栈（含 magic-pdf / paddleocr，需 --pre）
+RUN pip install --no-cache-dir -U pip setuptools wheel && \
+    pip install --no-cache-dir -e . && \
+    pip install --no-cache-dir paddlepaddle==2.6.1 \
+        -i https://www.paddlepaddle.org.cn/packages/stable/cpu/ && \
+    pip install --no-cache-dir --pre -e ".[parsing]"
+
+# 构建期校验：确保 Worker 启动时能检测到 MinerU + OCR
+RUN python -c "\
+import paddle; \
+import paddleocr; \
+import magic_pdf; \
+print('parsing stack OK', 'paddle', paddle.__version__)"
+
+ENV PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
+
+CMD ["arq", "pipeline.tasks.ingest.WorkerSettings"]

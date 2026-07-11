@@ -1,0 +1,116 @@
+services:
+  # PostgreSQL + pgvector（需 zhparser：使用含 zhparser 的镜像或自行构建）
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: penalty_kb
+      POSTGRES_USER: kb_admin
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-change-me-in-production}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Schema 由 API/Worker 启动时 AutoMigrate 自动创建，无需 initdb.d 脚本
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "kb_admin"]
+      interval: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    env_file: .env
+    environment: &app_env
+      DATABASE_URL: postgresql://kb_admin:${PG_PASSWORD:-change-me-in-production}@postgres:5432/penalty_kb
+      REDIS_URL: redis://redis:6379
+      AUTO_MIGRATE: ${AUTO_MIGRATE:-true}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-cloud}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://tokendance.space/gateway/v1}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen-text-embedding-v4}
+      RERANKER_DEVICE: ${RERANKER_DEVICE:-cpu}
+      RERANKER_ENABLED: ${RERANKER_ENABLED:-true}
+      UPLOAD_DIR: /app/uploads
+      DATA_DIR: /app/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./data:/app/data
+
+  # ARQ Worker（MinerU + PaddleOCR，WSL/Linux Docker 测试 OCR）
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker.ocr
+    env_file: .env
+    environment: *app_env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./data:/app/data
+
+  # 轻量 Worker（无 OCR/MinerU，仅 pdfplumber 降级）— docker compose --profile lite up worker-lite
+  worker-lite:
+    profiles: ["lite"]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file: .env
+    environment: *app_env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./data:/app/data
+
+  # GPU 加速 MinerU（需 WSL2 + NVIDIA Container Toolkit）— docker compose --profile gpu up worker-gpu
+  worker-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker.ocr
+    env_file: .env
+    environment: *app_env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./data:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  pgdata:

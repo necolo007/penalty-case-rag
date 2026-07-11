@@ -1,0 +1,178 @@
+"""字段抽取引擎：正则规则 + LLM 二次纠错 + 字段校验置信度打分。
+
+两条输入路径：
+  ① 公示表解析结果（TableParser 已输出结构化 records）→ 直接映射
+  ② 长文本 Markdown（决定书/OCR）→ 正则抽取 → 低置信度 LLM 补全
+"""
+
+import json
+import logging
+import re
+
+from engine.classification.entity_normalizer import normalize_entity
+from engine.llm.client import DeepSeekClient, ThinkingMode
+from engine.llm.prompts import FIELD_REFINE_PROMPT
+from pipeline.extraction.regex_patterns import INSTITUTION_TYPE_RULES, PATTERNS
+from pipeline.extraction.schema import ExtractedCase, FieldConfidence, InstitutionType
+from pipeline.parser.base import ParseResult
+
+logger = logging.getLogger(__name__)
+
+CORE_FIELDS = ["party_name", "violation_behavior", "penalty_content", "regulator"]
+LLM_REFINE_THRESHOLD = 0.6
+
+
+class ExtractorEngine:
+    def __init__(self, llm_client: DeepSeekClient | None = None, use_llm_refine: bool = True):
+        self.llm = llm_client
+        self.use_llm_refine = use_llm_refine
+
+    def extract(self, parse_result: ParseResult, *, file_id: str,
+                source_file: str) -> list[ExtractedCase]:
+        # 路径①：公示表结构化 records
+        records = parse_result.metadata.get("records")
+        if records:
+            cases = [
+                self._from_table_record(r, file_id=file_id, source_file=source_file)
+                for r in records
+            ]
+        else:
+            # 路径②：长文本正则抽取（单文档单案例；多案例决定书由段落切分扩展）
+            case = self._from_text(parse_result.markdown, file_id=file_id, source_file=source_file)
+            cases = [case] if case else []
+
+        for case in cases:
+            self._infer_institution_type(case)
+            self._validate(case)
+            if (case.overall_confidence < LLM_REFINE_THRESHOLD
+                    and self.use_llm_refine and self.llm is not None):
+                self._llm_refine(case)
+                self._validate(case)
+        return cases
+
+    # ---------- 路径①：公示表 ----------
+
+    def _from_table_record(self, record: dict, *, file_id: str, source_file: str) -> ExtractedCase:
+        case = ExtractedCase(
+            file_id=file_id,
+            source_file=source_file,
+            party_name=record.get("party_name", ""),
+            penalty_doc_no=record.get("penalty_doc_no", ""),
+            violation_behavior=record.get("violation_behavior", ""),
+            penalty_content=record.get("penalty_content", ""),
+            regulator=record.get("regulator", ""),
+            legal_basis=record.get("legal_basis", ""),
+            publish_date=self._normalize_date(record.get("publish_date", "")),
+            extraction_method="table",
+        )
+        m = PATTERNS["fine_amount"].search(case.penalty_content)
+        if m:
+            case.fine_amount = m.group(1)
+        for f in CORE_FIELDS:
+            case.field_confidences[f] = (
+                FieldConfidence.HIGH.value if getattr(case, f) else FieldConfidence.LOW.value
+            )
+        return case
+
+    # ---------- 路径②：长文本 ----------
+
+    def _from_text(self, text: str, *, file_id: str, source_file: str) -> ExtractedCase | None:
+        if not text.strip():
+            return None
+
+        case = ExtractedCase(
+            file_id=file_id, source_file=source_file,
+            extraction_method="regex",
+            raw_text_snippet=text[:500],
+        )
+
+        for field_name in ("penalty_doc_no", "party_name", "violation_behavior",
+                           "penalty_content", "fine_amount", "legal_basis"):
+            m = PATTERNS[field_name].search(text)
+            if m:
+                setattr(case, field_name, m.group(1).strip())
+                case.field_confidences[field_name] = FieldConfidence.HIGH.value
+            else:
+                case.field_confidences[field_name] = FieldConfidence.LOW.value
+
+        # 处罚机关：显式字段优先，正文兜底
+        m = PATTERNS["regulator"].search(text)
+        if m:
+            case.regulator = m.group(1).strip()
+            case.field_confidences["regulator"] = FieldConfidence.HIGH.value
+        else:
+            m = PATTERNS["regulator_inline"].search(text)
+            if m:
+                case.regulator = m.group(1).strip()
+                case.field_confidences["regulator"] = FieldConfidence.MEDIUM.value
+
+        m = PATTERNS["publish_date"].search(text)
+        if m:
+            case.publish_date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+            case.field_confidences["publish_date"] = FieldConfidence.MEDIUM.value
+
+        return case
+
+    # ---------- LLM 纠错 ----------
+
+    def _llm_refine(self, case: ExtractedCase) -> None:
+        extracted = {
+            f: getattr(case, f)
+            for f in ("party_name", "penalty_doc_no", "violation_behavior",
+                      "penalty_content", "regulator", "publish_date", "legal_basis")
+        }
+        try:
+            resp = self.llm.complete(
+                FIELD_REFINE_PROMPT.format(
+                    raw_text=case.raw_text_snippet or "（无原文片段）",
+                    extracted_fields=json.dumps(extracted, ensure_ascii=False),
+                ),
+                max_tokens=500,
+                temperature=0.1,
+                json_mode=True,
+                thinking=ThinkingMode.DISABLED,
+            )
+            data = json.loads(resp)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("LLM refine failed for %s: %s", case.file_id, e)
+            return
+
+        for field_name, value in data.items():
+            if value and not getattr(case, field_name, None):
+                setattr(case, field_name, str(value).strip())
+                case.field_confidences[field_name] = FieldConfidence.MEDIUM.value
+        case.extraction_method = "hybrid"
+
+    # ---------- 校验与置信度 ----------
+
+    def _validate(self, case: ExtractedCase) -> None:
+        filled = sum(1 for f in CORE_FIELDS if getattr(case, f))
+        base = filled / len(CORE_FIELDS)
+
+        # 文号格式加分项
+        bonus = 0.1 if case.penalty_doc_no else 0.0
+        case.overall_confidence = round(min(base + bonus, 1.0), 3)
+
+    def _infer_institution_type(self, case: ExtractedCase) -> None:
+        name = case.party_name
+        entity = normalize_entity(name)
+        if entity.entity_type == "责任人员":
+            case.institution_type = InstitutionType.INSURANCE_AGENT
+            return
+        for pattern, type_name in INSTITUTION_TYPE_RULES:
+            if re.search(pattern, name):
+                case.institution_type = InstitutionType(type_name)
+                return
+        case.institution_type = InstitutionType.NON_INSURANCE
+
+    @staticmethod
+    def _normalize_date(raw: str) -> str | None:
+        if not raw:
+            return None
+        m = PATTERNS["publish_date"].search(raw)
+        if m:
+            return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+        m = re.search(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", raw)
+        if m:
+            return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+        return None

@@ -1,0 +1,19 @@
+# 轻量 Worker：无 MinerU/OCR，解析降级为 pdfplumber。
+# 完整 OCR 请用 Dockerfile.worker.ocr（docker compose up worker）
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY core ./core
+COPY engine ./engine
+COPY pipeline ./pipeline
+COPY api ./api
+COPY scripts ./scripts
+COPY db ./db
+
+# Worker 需要解析栈；MinerU/PaddleOCR 体积大，GPU 镜像可换 base 为 nvidia/cuda
+RUN pip install --no-cache-dir -e . && \
+    pip install --no-cache-dir -e ".[parsing]" || echo "parsing extras skipped (fallback to pdfplumber)"
+
+CMD ["arq", "pipeline.tasks.ingest.WorkerSettings"]
