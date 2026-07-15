@@ -57,6 +57,14 @@
     letter-spacing: -0.02em;
   }
 
+  body,
+  button,
+  input,
+  textarea,
+  select {
+    font-family: var(--font-sans);
+  }
+
   button,
   a,
   [role="button"] {

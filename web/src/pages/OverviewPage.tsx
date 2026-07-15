@@ -47,40 +47,50 @@ export function OverviewPage() {
 
   return (
     <div className="space-y-10">
-      <section className="relative overflow-hidden rounded-3xl border border-border/70 bg-gradient-to-br from-primary via-primary to-primary-deep px-6 py-12 text-white shadow-[var(--shadow-lift)] sm:px-10 sm:py-16">
+      <section className="relative isolate min-h-[min(72vh,560px)] overflow-hidden rounded-3xl border border-border/50 shadow-[var(--shadow-lift)]">
+        <img
+          src="/hero-insurance-office.jpg"
+          alt="保险业务办公场景：顾问与客户审阅保单与合规材料"
+          className="absolute inset-0 h-full w-full object-cover object-[center_35%]"
+          width={1920}
+          height={1080}
+          fetchPriority="high"
+        />
         <div
-          className="pointer-events-none absolute inset-0 opacity-30"
-          style={{
-            backgroundImage:
-              "linear-gradient(rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.08) 1px, transparent 1px)",
-            backgroundSize: "28px 28px",
-          }}
+          className="absolute inset-0 bg-gradient-to-r from-[#0c1a2e]/88 via-[#12253d]/55 to-transparent"
           aria-hidden
         />
-        <div className="relative max-w-3xl rise-in">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-[0.22em] text-white/70">
-            Insurance Penalty Knowledge Base
-          </p>
-          <h1 className="font-display text-4xl font-bold leading-tight sm:text-5xl">
-            案库
-          </h1>
-          <p className="mt-4 max-w-xl text-base leading-relaxed text-white/85 sm:text-lg">
-            面向保险监管合规场景的处罚案例检索与审查工作台。四路混合召回，可解释匹配，沉淀可追溯审查意见。
-          </p>
-          <div className="mt-8 flex flex-wrap gap-3">
-            <Link
-              to="/search"
-              className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-white no-underline shadow-lg transition hover:brightness-110"
-            >
-              <Search className="h-4 w-4" aria-hidden />
-              开始检索
-            </Link>
-            <Link
-              to="/documents"
-              className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-white/30 bg-white/10 px-5 py-2.5 text-sm font-semibold text-white no-underline backdrop-blur transition hover:bg-white/20"
-            >
-              上传文档
-            </Link>
+        <div
+          className="absolute inset-0 bg-gradient-to-t from-[#0c1a2e]/65 via-transparent to-black/10"
+          aria-hidden
+        />
+
+        <div className="relative flex min-h-[min(72vh,560px)] items-end px-6 py-10 sm:px-10 sm:py-14">
+          <div className="max-w-2xl rise-in rounded-2xl bg-[#0c1a2e]/25 p-1 backdrop-blur-[2px] sm:bg-transparent sm:p-0 sm:backdrop-blur-none">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-[0.22em] text-white/80 drop-shadow">
+              Insurance Penalty Knowledge Base
+            </p>
+            <h1 className="font-display text-5xl font-bold leading-none text-white drop-shadow-md sm:text-6xl md:text-7xl">
+              案库
+            </h1>
+            <p className="mt-5 max-w-xl text-base leading-relaxed text-white/95 drop-shadow sm:text-lg">
+              面向保险监管合规场景的处罚案例检索与审查工作台。四路混合召回，可解释匹配，沉淀可追溯审查意见。
+            </p>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <Link
+                to="/search"
+                className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-white no-underline shadow-lg transition duration-200 hover:brightness-110"
+              >
+                <Search className="h-4 w-4" aria-hidden />
+                开始检索
+              </Link>
+              <Link
+                to="/documents"
+                className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-white/35 bg-white/12 px-5 py-2.5 text-sm font-semibold text-white no-underline backdrop-blur-sm transition duration-200 hover:bg-white/22"
+              >
+                上传文档
+              </Link>
+            </div>
           </div>
         </div>
       </section>
