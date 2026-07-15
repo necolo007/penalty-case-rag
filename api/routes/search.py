@@ -15,6 +15,12 @@ from api.schemas.models import (
     SubmissionResponse,
 )
 from core.config import get_settings
+from core.config import get_settings
+from engine.classification.competition_label_map import (
+    competition_ids_to_cn_tags,
+    format_submission_risk_type,
+    predict_cn_tags_by_keywords,
+)
 from engine.classification.tag_mapper import competition_name
 from engine.retrieval.base import SearchQuery
 
@@ -42,22 +48,41 @@ async def _build_submission(req: RetrieveRequest, retriever, generator,
     """改写 → 四路检索 → 多风险类型判断 → 审查建议生成，输出 submission schema"""
     retrieval = await retriever.retrieve(_to_search_query(req))
 
-    risk_type_names = [competition_name(rid) for rid in retrieval.predicted_risk_ids]
+    # 中文标签：规则关键词 + Top 案例标签并集
+    cn_tags = list(dict.fromkeys([
+        *predict_cn_tags_by_keywords(req.query_text),
+        *[t for r in retrieval.results[:3] for t in (r.risk_tags or [])],
+    ]))[:5]
+    if not cn_tags:
+        cn_tags = competition_ids_to_cn_tags(retrieval.predicted_risk_ids)
+
     suggestion = ""
     reasons = {r.case_id: r.match_reason for r in retrieval.results}
+    llm_risk_names: list[str] = []
 
     if generator is not None and retrieval.results:
         review = generator.generate(req.query_text, retrieval.results)
         if review.get("risk_types"):
-            risk_type_names = review["risk_types"]
+            llm_risk_names = list(review["risk_types"])
+            for name in llm_risk_names:
+                if name and not str(name).startswith("R0") and name not in cn_tags:
+                    cn_tags.append(name)
         suggestion = review.get("suggestion", "")
         for a in review.get("case_analysis", []):
             if a.get("case_id") and a.get("similarity_reason"):
                 reasons[a["case_id"]] = a["similarity_reason"]
 
+    if get_settings().SUBMISSION_RISK_STYLE == "competition":
+        names = llm_risk_names or [competition_name(rid) for rid in retrieval.predicted_risk_ids]
+        risk_type = "；".join(dict.fromkeys(names))
+    else:
+        risk_type = format_submission_risk_type(
+            cn_tags=cn_tags, competition_ids=retrieval.predicted_risk_ids,
+        )
+
     return SubmissionResponse(
         question_id=req.question_id,
-        risk_type="；".join(dict.fromkeys(risk_type_names)),
+        risk_type=risk_type,
         retrieved_cases=[
             SubmissionCase(case_id=r.case_id, rank=i + 1,
                            reason=reasons.get(r.case_id, r.match_reason))

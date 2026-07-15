@@ -1,4 +1,4 @@
-"""OCR 冒烟测试（在 worker 容器内执行）。
+"""OCR 冒烟测试（在 OCR Worker 容器内执行）。
 
 用法：
   python scripts/test_ocr.py
@@ -12,18 +12,31 @@ from pathlib import Path
 
 
 def _check_imports() -> None:
-    import paddle
-    import paddleocr
-    import magic_pdf
+    try:
+        from rapidocr_onnxruntime import RapidOCR  # noqa: F401
 
-    print(f"[OK] paddle=={paddle.__version__}")
-    print("[OK] paddleocr imported")
-    print("[OK] magic_pdf imported")
+        print("[OK] rapidocr_onnxruntime imported")
+    except ImportError:
+        print("[MISS] rapidocr_onnxruntime")
+
+    try:
+        import paddleocr  # noqa: F401
+
+        print("[OK] paddleocr imported")
+    except ImportError:
+        print("[MISS] paddleocr (optional)")
+
+    try:
+        import fitz
+
+        print(f"[OK] pymupdf imported ({fitz.__doc__.split()[0] if fitz.__doc__ else 'ok'})")
+    except ImportError:
+        print("[MISS] pymupdf")
 
 
 def _run_ocr(file_path: str) -> None:
     from pipeline.parser.base import RawDocument
-    from pipeline.parser.paddleocr_fallback import PaddleOCRFallback
+    from pipeline.parser.paddleocr_fallback import OCRFallback
 
     path = Path(file_path)
     if not path.is_file():
@@ -36,7 +49,7 @@ def _run_ocr(file_path: str) -> None:
         file_name=path.name,
         mime_type=mime,
     )
-    result = PaddleOCRFallback().parse(doc)
+    result = OCRFallback().parse(doc)
     print(f"success={result.success} confidence={result.confidence:.3f}")
     print(f"parser={result.metadata.get('parser')}")
     if result.error:

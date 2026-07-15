@@ -13,6 +13,7 @@ from pathlib import Path
 
 import asyncpg
 
+from core.dates import parse_optional_date
 from core.db import to_pgvector
 from engine.classification.entity_normalizer import normalize_entity
 from engine.classification.insurance_filter import InsuranceFilter
@@ -136,10 +137,9 @@ class IngestOrchestrator:
             return f"{case.party_name}因{case.violation_behavior[:40]}被处罚。"
 
     async def _next_case_id(self) -> str:
-        row = await self.pool.fetchrow(
-            "SELECT COUNT(*) + 1 AS n FROM penalty_cases"
-        )
-        return f"C{row['n']:06d}"
+        from core.ids import next_case_id
+
+        return await next_case_id(self.pool)
 
     async def _store_case(self, case_id: str, case: ExtractedCase, *,
                           regulator: str | None, publish_date: str | None) -> None:
@@ -164,13 +164,13 @@ class IngestOrchestrator:
                         overall_confidence, field_confidences, extraction_method
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9,
-                        $10::date, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20
+                        $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20
                     )
                     """,
                     case_id, case.file_id, case.party_name, case.institution_type.value,
                     case.penalty_doc_no, case.violation_behavior, case.penalty_content,
                     case.fine_amount, case.regulator or regulator,
-                    case.publish_date or publish_date, case.legal_basis,
+                    parse_optional_date(case.publish_date or publish_date), case.legal_basis,
                     case.is_insurance_related, case.is_insurance_candidate,
                     case.candidate_reasons, case.risk_tags, case.risk_type_ids,
                     case.case_summary, case.overall_confidence,

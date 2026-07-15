@@ -11,6 +11,10 @@ import logging
 import time
 from dataclasses import dataclass, field
 
+from engine.classification.competition_label_map import (
+    cn_tags_to_competition_ids,
+    predict_cn_tags_by_keywords,
+)
 from engine.embedding.cache import CachedQueryEncoder
 from engine.retrieval.base import SearchQuery, SearchResult
 from engine.retrieval.bm25_retriever import BM25Retriever
@@ -34,6 +38,7 @@ class RetrievalResponse:
     results: list[SearchResult]
     took_ms: int
     channel_stats: dict[str, int] = field(default_factory=dict)
+    predicted_cn_tags: list[str] = field(default_factory=list)
 
 
 class HybridRetriever:
@@ -68,6 +73,12 @@ class HybridRetriever:
             self.rewriter.rewrite(query.query_text),
             self.risk_predictor.predict(query.query_text),
         )
+        # 中文标签关键词增强（对齐配套 27 类）
+        predicted_cn_tags = predict_cn_tags_by_keywords(query.query_text)
+        if predicted_cn_tags:
+            for cid in cn_tags_to_competition_ids(predicted_cn_tags):
+                if cid not in predicted_risk_ids:
+                    predicted_risk_ids.append(cid)
 
         # 2. 改写文本向量化（instruct 非对称编码 + Redis 缓存）
         query_embedding = await self.query_encoder.encode_query(rewritten_query)
@@ -76,7 +87,11 @@ class HybridRetriever:
         channel_tasks = {
             "bm25": self.bm25.retrieve(query, search_text=rewritten_query),
             "vector": self.vector.retrieve(query, query_embedding=query_embedding),
-            "tag": self.tag.retrieve(query, predicted_risk_ids=predicted_risk_ids),
+            "tag": self.tag.retrieve(
+                query,
+                predicted_risk_ids=predicted_risk_ids,
+                predicted_cn_tags=predicted_cn_tags,
+            ),
             "rule": self.rule.retrieve(query),
         }
         channel_outputs = await asyncio.gather(*channel_tasks.values(), return_exceptions=True)
@@ -107,6 +122,7 @@ class HybridRetriever:
             query=query.query_text,
             rewritten_query=rewritten_query,
             predicted_risk_ids=predicted_risk_ids,
+            predicted_cn_tags=predicted_cn_tags,
             results=top,
             took_ms=took_ms,
             channel_stats={ch: len(rs) for ch, rs in channel_results.items()},

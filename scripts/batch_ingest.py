@@ -43,12 +43,17 @@ async def main():
     pool = await create_pool()
     llm = None if args.no_llm or not settings.LLM_API_KEY else create_llm_client(settings)
 
+    enable_ocr = (
+        importlib.util.find_spec("rapidocr_onnxruntime") is not None
+        or importlib.util.find_spec("rapidocr") is not None
+        or importlib.util.find_spec("paddleocr") is not None
+    )
     orchestrator = IngestOrchestrator(
         pool=pool,
         router=DocumentRouter(
             mineru_engine=settings.MINERU_ENGINE,
             enable_mineru=importlib.util.find_spec("magic_pdf") is not None,
-            enable_ocr=importlib.util.find_spec("paddleocr") is not None,
+            enable_ocr=enable_ocr,
         ),
         extractor=ExtractorEngine(llm_client=llm),
         insurance_filter=InsuranceFilter(dict_dir=f"{settings.DATA_DIR}/dictionaries"),
@@ -62,12 +67,13 @@ async def main():
         p for p in Path(args.dir).rglob("*")
         if p.is_file() and p.suffix.lower() in MIME_BY_EXT
     )
-    print(f"Found {len(files)} files")
+    print(f"Found {len(files)} files (ocr={enable_ocr})")
+
+    from core.ids import next_file_id
 
     ok = failed = 0
     for i, path in enumerate(files, 1):
-        row = await pool.fetchrow("SELECT COUNT(*) + 1 AS n FROM documents")
-        file_id = f"F{row['n']:06d}"
+        file_id = await next_file_id(pool)
         ext = path.suffix.lower()
 
         await pool.execute(

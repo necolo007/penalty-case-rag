@@ -10,7 +10,8 @@ services:
       POSTGRES_USER: kb_admin
       POSTGRES_PASSWORD: ${PG_PASSWORD:-change-me-in-production}
     ports:
-      - "5432:5432"
+      # Windows Hyper-V 常保留 5432；宿主机改用 PG_HOST_PORT（默认 15432）
+      - "${PG_HOST_PORT:-15432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Schema 由 API/Worker 启动时 AutoMigrate 自动创建，无需 initdb.d 脚本
@@ -22,7 +23,8 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6534:6379"
+      # Windows Hyper-V 常保留 6379；宿主机改用 REDIS_HOST_PORT（默认 6534）
+      - "${REDIS_HOST_PORT:-6534}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

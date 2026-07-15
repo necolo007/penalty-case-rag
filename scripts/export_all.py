@@ -10,6 +10,7 @@ from pathlib import Path
 from core.db import close_pool, create_pool
 from pipeline.export.exporters import (
     export_candidates,
+    export_extracted_cases,
     export_gold_cases,
     export_manifest,
     export_risk_type_dict,
@@ -28,8 +29,9 @@ async def main():
         paths = [
             await export_manifest(pool, out / "penalty_raw_manifest.jsonl"),
             await export_candidates(pool, out / "insurance_candidate_cases.jsonl"),
-            await export_gold_cases(pool, out / "gold_extraction_cases.jsonl"),
-            await export_risk_type_dict(pool, out / "risk_type_dictionary.csv"),
+            await export_extracted_cases(pool, out / "extracted_cases.jsonl"),
+            await export_gold_cases(pool, out / "gold_extraction_cases.exported.jsonl"),
+            await export_risk_type_dict(pool, out / "risk_type_dictionary.exported.csv"),
             await export_subject_relations(pool, out / "subject_relations.csv"),
         ]
         for p in paths:

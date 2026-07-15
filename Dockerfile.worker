@@ -1,5 +1,5 @@
-# 轻量 Worker：无 MinerU/OCR，解析降级为 pdfplumber。
-# 完整 OCR 请用 Dockerfile.worker.ocr（docker compose up worker）
+# 轻量 Worker：无 OCR/MinerU，解析降级为 pdfplumber。
+# OCR 能力请用 Dockerfile.worker.ocr（RapidOCR/ONNX）
 FROM python:3.11-slim
 
 WORKDIR /app

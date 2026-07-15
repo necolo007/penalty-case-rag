@@ -4,6 +4,7 @@
 """
 
 import logging
+from pathlib import Path
 
 from arq.connections import RedisSettings
 
@@ -21,12 +22,48 @@ from pipeline.parser.router import DocumentRouter
 logger = logging.getLogger(__name__)
 
 
+def _resolve_upload_path(file_path: str) -> str:
+    """将任务中的路径解析为当前环境可读路径。
+
+    本机 API 可能入队 Windows 相对路径（uploads\\F000003.pdf）；
+    Docker Worker 的 UPLOAD_DIR=/app/uploads，需用 basename 重拼。
+    """
+    raw = Path(file_path.replace("\\", "/"))
+    if raw.is_file():
+        return str(raw)
+
+    upload_dir = Path(get_settings().UPLOAD_DIR)
+    candidate = upload_dir / raw.name
+    if candidate.is_file():
+        return str(candidate)
+
+    # 兼容仅传文件名、以及仍带相对目录的情况
+    for alt in (upload_dir / Path(file_path).name, Path(file_path)):
+        if alt.is_file():
+            return str(alt)
+
+    raise FileNotFoundError(
+        f"upload file not found: {file_path!r} (tried {candidate})"
+    )
+
+
 async def ingest_document(ctx, file_id: str, file_path: str, file_name: str,
                           mime_type: str, regulator: str | None = None,
                           publish_date: str | None = None) -> dict:
     orchestrator: IngestOrchestrator = ctx["orchestrator"]
+    try:
+        resolved = _resolve_upload_path(file_path)
+    except FileNotFoundError as e:
+        logger.error("%s", e)
+        pool = ctx["pool"]
+        await pool.execute(
+            "UPDATE documents SET parse_status = 'failed', parse_error = $2 WHERE file_id = $1",
+            file_id, str(e),
+        )
+        return {"status": "failed", "file_id": file_id, "error": str(e)}
+
     doc = RawDocument(
-        file_id=file_id, file_path=file_path, file_name=file_name, mime_type=mime_type,
+        file_id=file_id, file_path=resolved, file_name=file_name, mime_type=mime_type,
     )
     try:
         return await orchestrator.ingest_document(
@@ -48,11 +85,21 @@ async def startup(ctx):
     llm = create_llm_client(settings) if settings.LLM_API_KEY else None
     embedder = create_embedding_provider(settings)
 
-    # Worker 环境无 MinerU/OCR 时可自动降级到 pdfplumber 纯文本
+    # Worker 环境无 MinerU/OCR 时可自动降级到 pdfplumber 纯文本。
+    # Paddle + Torch(MinerU) 同进程易 SIGSEGV：若两者皆在，优先保留 OCR。
     try:
         import importlib.util
         enable_mineru = importlib.util.find_spec("magic_pdf") is not None
-        enable_ocr = importlib.util.find_spec("paddleocr") is not None
+        enable_ocr = (
+            importlib.util.find_spec("rapidocr_onnxruntime") is not None
+            or importlib.util.find_spec("paddleocr") is not None
+        )
+        if enable_mineru and enable_ocr:
+            logger.warning(
+                "Both magic_pdf and OCR backend detected; disabling MinerU to avoid "
+                "Paddle/Torch SIGSEGV. Use separate workers for MinerU if needed."
+            )
+            enable_mineru = False
     except Exception:  # noqa: BLE001
         enable_mineru = enable_ocr = False
 

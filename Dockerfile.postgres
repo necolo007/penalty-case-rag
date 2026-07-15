@@ -1,0 +1,52 @@
+# PostgreSQL 16 + pgvector + zhparser（中文 BM25 全文检索）
+# 参考：https://github.com/amutu/zhparser/issues/84
+#
+# 构建：docker compose build postgres
+# 首次切换需重建数据卷（旧 simple 降级配置不兼容）：
+#   docker compose down -v && docker compose up -d postgres redis
+
+ARG PG_MAJOR=16
+
+FROM postgres:${PG_MAJOR} AS builder
+
+RUN set -ex \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential git ca-certificates autoconf automake libtool m4 \
+        postgresql-server-dev-${PG_MAJOR} \
+    && rm -rf /var/lib/apt/lists/*
+
+# SCWS 中文分词库（zhparser 依赖）
+# SCWS 的旧 Makefile.am 在规则体内有注释，新版 automake 会将其视为不可移植错误。
+RUN set -ex \
+    && git clone --depth 1 https://github.com/hightman/scws.git /tmp/scws \
+    && cd /tmp/scws \
+    && touch README \
+    && sed -i '/^[[:space:]]*# -rm -f/d; /^[[:space:]]*#unison /d' Makefile.am \
+    && aclocal && autoconf && autoheader && libtoolize && automake --add-missing \
+    && ./configure \
+    && make -j"$(nproc)" \
+    && make install
+
+# zhparser 扩展
+RUN set -ex \
+    && git clone --depth 1 https://github.com/amutu/zhparser.git /tmp/zhparser \
+    && cd /tmp/zhparser \
+    && make \
+    && make install
+
+FROM pgvector/pgvector:pg16
+
+ARG PG_MAJOR=16
+
+COPY --from=builder /usr/lib/postgresql/${PG_MAJOR}/lib/zhparser.so \
+    /usr/lib/postgresql/${PG_MAJOR}/lib/
+COPY --from=builder /usr/local/lib/libscws.* /usr/local/lib/
+COPY --from=builder /usr/share/postgresql/${PG_MAJOR}/extension/zhparser* \
+    /usr/share/postgresql/${PG_MAJOR}/extension/
+COPY --from=builder /usr/lib/postgresql/${PG_MAJOR}/lib/bitcode/zhparser* \
+    /usr/lib/postgresql/${PG_MAJOR}/lib/bitcode/
+COPY --from=builder /usr/share/postgresql/${PG_MAJOR}/tsearch_data/*.utf8.* \
+    /usr/share/postgresql/${PG_MAJOR}/tsearch_data/
+
+RUN ldconfig

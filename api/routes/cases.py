@@ -2,13 +2,13 @@
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from api.dependencies import get_pool
 from api.schemas.models import CasePatchRequest
 from core.config import get_settings
-from pipeline.export.exporters import export_candidates, export_gold_cases
+from pipeline.export.exporters import export_candidates, export_extracted_cases, export_gold_cases
 
 router = APIRouter()
 
@@ -30,9 +30,18 @@ async def export_candidates_endpoint(pool=Depends(get_pool)):
 @router.get("/export/gold")
 async def export_gold_endpoint(min_confidence: float = 0.75, pool=Depends(get_pool)):
     """导出 gold_extraction_cases.jsonl"""
-    output = Path(get_settings().DATA_DIR) / "eval" / "gold_extraction_cases.jsonl"
+    output = Path(get_settings().DATA_DIR) / "eval" / "gold_extraction_cases.exported.jsonl"
     path = await export_gold_cases(pool, output, min_confidence=min_confidence)
     return FileResponse(path, filename="gold_extraction_cases.jsonl",
+                        media_type="application/jsonl")
+
+
+@router.get("/export/extracted")
+async def export_extracted_endpoint(pool=Depends(get_pool)):
+    """导出 extracted_cases.jsonl（全量结构化案例）"""
+    output = Path(get_settings().DATA_DIR) / "eval" / "extracted_cases.jsonl"
+    path = await export_extracted_cases(pool, output)
+    return FileResponse(path, filename="extracted_cases.jsonl",
                         media_type="application/jsonl")
 
 
@@ -55,8 +64,7 @@ async def get_case(case_id: str, pool=Depends(get_pool)):
 
 @router.get("")
 async def list_cases(
-    page: int = 1,
-    page_size: int = 20,
+    request: Request,
     risk_type: str | None = None,
     regulator: str | None = None,
     institution_type: str | None = None,
@@ -64,6 +72,17 @@ async def list_cases(
     keyword: str | None = None,
     pool=Depends(get_pool),
 ):
+    def _qint(name: str, default: int) -> int:
+        raw = request.query_params.get(name)
+        if raw is None or raw == "":
+            return default
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise HTTPException(422, detail=f"Invalid integer for {name}: {raw!r}") from exc
+
+    page = max(1, _qint("page", 1))
+    page_size = max(1, _qint("page_size", 20))
     params: list = []
     clauses: list[str] = []
 

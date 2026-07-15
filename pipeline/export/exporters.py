@@ -103,6 +103,45 @@ async def export_gold_cases(pool: asyncpg.Pool, output: str | Path,
     return _write_jsonl(Path(output), data)
 
 
+async def export_extracted_cases(pool: asyncpg.Pool, output: str | Path) -> Path:
+    """extracted_cases.jsonl：全量结构化案例（不按置信度过滤）。"""
+    rows = await pool.fetch(
+        """
+        SELECT c.case_id, c.file_id, d.file_name, c.is_insurance_related,
+               c.is_insurance_candidate, c.party_name, c.institution_type,
+               c.penalty_doc_no, c.violation_behavior, c.penalty_content,
+               c.regulator, c.publish_date, c.risk_tags, c.risk_type_ids,
+               c.case_summary, c.overall_confidence, c.extraction_method
+        FROM penalty_cases c
+        JOIN documents d ON c.file_id = d.file_id
+        ORDER BY c.case_id
+        """
+    )
+    data = [
+        {
+            "case_id": r["case_id"],
+            "file_id": r["file_id"],
+            "source_file": r["file_name"],
+            "is_insurance_related": r["is_insurance_related"],
+            "is_insurance_candidate": r["is_insurance_candidate"],
+            "party_name": r["party_name"],
+            "institution_type": r["institution_type"],
+            "penalty_doc_no": r["penalty_doc_no"],
+            "violation_behavior": r["violation_behavior"],
+            "penalty_content": r["penalty_content"],
+            "regulator": r["regulator"],
+            "publish_date": r["publish_date"].isoformat() if r["publish_date"] else None,
+            "risk_tags": list(r["risk_tags"] or []),
+            "risk_type_ids": list(r["risk_type_ids"] or []),
+            "case_summary": r["case_summary"],
+            "overall_confidence": r["overall_confidence"],
+            "extraction_method": r["extraction_method"],
+        }
+        for r in rows
+    ]
+    return _write_jsonl(Path(output), data)
+
+
 async def export_risk_type_dict(pool: asyncpg.Pool, output: str | Path) -> Path:
     """risk_type_dictionary.csv：风险标签字典（任务2）"""
     rows = await pool.fetch(

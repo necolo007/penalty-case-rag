@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.idea/
+.pytest_cache/
+.ruff_cache/
+
+uploads/
+data/raw/*
+data/raw_text/*
+data/eval/*.jsonl
+!data/raw/.gitkeep
+!data/raw_text/.gitkeep
+!data/eval/.gitkeep
+
+pgdata/
+*.log
+
+# Frontend
+web/node_modules/
+web/dist/

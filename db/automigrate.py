@@ -1,8 +1,8 @@
 """启动时自动建库（GORM AutoMigrate 风格，幂等可重复执行）。
 
-API / Worker 首次连接 PostgreSQL 时自动执行：
-  1. db/migrations/001_*.sql — 扩展、表、索引、触发器
-  2. db/migrations/002_*.sql — 种子数据（仅库为空时写入）
+API / Worker 首次连接 PostgreSQL 时自动执行 db/migrations/00N_*.sql：
+  - 001 schema、003 去重/发号 等 DDL 每次幂等执行
+  - 002 主种子仅空库写入；004 扩展词典每次幂等追加
 
 无需手动 run scripts/setup_db.py；该脚本保留为可选调试入口。
 """
@@ -123,16 +123,15 @@ async def auto_migrate(conn: asyncpg.Connection) -> None:
     """对单连接执行 schema + 条件种子。可安全重复调用。"""
     await _ensure_text_search_config(conn)
 
-    for path in _sorted_sql("001_*.sql"):
-        logger.info("AutoMigrate: applying schema %s", path.name)
+    for path in _sorted_sql("[0-9][0-9][0-9]_*.sql"):
+        name = path.name
+        # 002 主种子：仅空库写入；004 等扩展种子每次幂等追加
+        if name.startswith("002_"):
+            if not await _needs_seed(conn):
+                logger.debug("AutoMigrate: seed data present, skip %s", name)
+                continue
+        logger.info("AutoMigrate: applying %s", name)
         await conn.execute(path.read_text(encoding="utf-8"))
-
-    if await _needs_seed(conn):
-        for path in _sorted_sql("002_*.sql"):
-            logger.info("AutoMigrate: applying seed %s", path.name)
-            await conn.execute(path.read_text(encoding="utf-8"))
-    else:
-        logger.debug("AutoMigrate: seed data present, skip")
 
     logger.info("AutoMigrate: schema ready")
 

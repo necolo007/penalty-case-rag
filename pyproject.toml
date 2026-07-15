@@ -31,7 +31,18 @@ local-models = [
     "FlagEmbedding>=1.2",
     "torch>=2.2",
 ]
-# MinerU 文档解析（GPU 环境）
+# OCR alone（Docker Worker 推荐 RapidOCR，避免 Paddle SIGSEGV）
+parsing-ocr = [
+    "rapidocr-onnxruntime>=1.3",
+    "onnxruntime>=1.16",
+    "opencv-python-headless>=4.8,<4.11",
+    "pymupdf>=1.24,<1.27",
+]
+# MinerU 文档解析（依赖 torch；勿与 PaddleOCR 同进程）
+parsing-mineru = [
+    "magic-pdf[full]>=0.7",
+]
+# 兼容旧写法：同时声明两边，但 runtime 同进程可能 SIGSEGV
 parsing = [
     "magic-pdf[full]>=0.7",
     "paddleocr>=2.7",

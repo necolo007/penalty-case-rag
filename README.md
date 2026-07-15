@@ -1,6 +1,6 @@
-# 保险监管处罚案例知识库与合规审查系统（后端 RAG）
+# 保险监管处罚案例知识库与合规审查系统
 
-基于知识增强检索的保险监管处罚案例知识库构建与合规审查智能匹配 — 后端实现。
+基于知识增强检索的保险监管处罚案例知识库构建与合规审查智能匹配
 
 ## 核心能力
 
@@ -40,25 +40,26 @@ python scripts/batch_ingest.py --dir data/raw
 
 ### WSL / Docker（含 OCR）
 
-在 WSL2 中推荐用 Docker 跑 MinerU + PaddleOCR（Windows 本机难以安装 parsing 栈）：
+Windows 本机 PaddleOCR 不稳定，且 Paddle 与 Torch/OpenCV 混装易 SIGSEGV。  
+Docker OCR Worker 使用 **RapidOCR（ONNX）**：扫描件走 OCR，文字 PDF 走 pdfplumber。
 
 ```bash
-# 构建 OCR Worker 镜像（首次约 5–10 分钟，镜像 ~3GB）
-make docker-ocr-build
+# 构建 OCR Worker
+docker compose build worker
 
-# 启动 postgres + redis + api + OCR worker
-make docker-up
+# 启动基础设施 + OCR worker（本机可只跑 API）
+docker compose up -d postgres redis worker
 
-# 冒烟测试：校验 paddle / paddleocr / magic_pdf 导入
-make docker-ocr-test
+# 冒烟测试
+docker compose run --rm worker python scripts/test_ocr.py
 
-# 对扫描件实测 OCR（将 PDF/图片放到 uploads/ 后）
+# 扫描件实测（文件放到 uploads/）
 docker compose run --rm worker python scripts/test_ocr.py /app/uploads/your_scan.pdf
 ```
 
-> **说明**：默认 `worker` 使用 `Dockerfile.worker.ocr`（CPU 即可跑 OCR）。
-> 无需 OCR 时用轻量 Worker：`docker compose --profile lite up -d worker-lite`
-> 有 NVIDIA GPU 时：`docker compose --profile gpu up -d worker-gpu`
+> **说明**：默认 `worker` → `Dockerfile.worker.ocr`（RapidOCR + pdfplumber）。  
+> 无 OCR 轻量版：`docker compose --profile lite up -d worker-lite`  
+> GPU profile：`docker compose --profile gpu up -d worker-gpu`（仍为 RapidOCR 镜像）
 
 > **注意**：默认 Postgres 使用 `Dockerfile.postgres`（pgvector + zhparser）。
 > 构建：`docker compose build postgres`；`.env` 建议 `REQUIRE_ZHPARSER=true` 禁止降级。
@@ -94,7 +95,44 @@ SELECT * FROM ts_parse('zhparser', '销售误导 给予合同外利益');
 
 日志中应出现：`Text search config: zhparser_config (zhparser)`，而不是 simple fallback。
 
-完整路由见 `http://localhost:8000/docs`（Swagger UI）。
+完整路由见 `http://localhost:8000/docs`（Swagger UI）。  
+Web 前端（React）：`http://localhost:8000/`（总览 / 检索 / 案例库 / 文档入库 / 合规审查）。
+
+```bash
+# 开发模式（Vite 热更新，代理 /api → :8000）
+make web-dev          # 或 cd web && npm run dev
+
+# 生产构建（产物 web/dist，由 FastAPI 托管）
+make web-build        # 或 cd web && npm run build
+```
+
+## 竞赛数据与本地评测
+
+（500 金标 + 300 训练查询 + 200 测试题）。**不要把万级 PDF 拷进本项目**。
+
+```bash
+# 1. 将评测文件复制到 data/eval/（也可设置 COMP_DATA_DIR）
+make link-data
+
+# 2. 导入官方金标 C001–C500（保留官方 ID，写入向量；需 Embedding Key）
+#    自动关联赛题包 raw_text/{file_id}.txt
+make import-gold
+
+# 3. API 启动后生成 submission 并评测
+make api          # 另开终端
+make eval-local   # = submission + eval → data/eval/eval_report.json
+```
+
+相关脚本：
+
+| 命令 | 作用 |
+|------|------|
+| `scripts/link_comp_data.py` | 接入配套评测文件 |
+| `scripts/import_gold_cases.py` | 导入金标 + embedding |
+| `scripts/run_batch_submission.py` | 生成 `submission.jsonl` |
+| `scripts/eval_retrieval.py` | Recall@K / MRR / NDCG |
+
+标签：库内 `risk_type_ids` 存 R001–R008；提交 `risk_type` 默认输出配套中文标签（`SUBMISSION_RISK_STYLE=cn`）。
 
 ## 开发说明
 
@@ -102,3 +140,5 @@ SELECT * FROM ts_parse('zhparser', '销售误导 给予合同外利益');
 - 无 LLM Key 时系统可降级运行：查询改写退化为同义词词典扩展，审查生成接口返回 503
 - 无本地模型时：`RERANKER_ENABLED=false` 关闭精排（按 RRF 顺序输出）
 - 切换 Embedding 模型后必须全量重建 `case_embeddings`（向量空间不一致）
+- 上传按 `content_sha256` 去重；解析失败可用 `POST /api/v1/documents/{file_id}/retry` 重试
+- API + Redis + Worker 需同时运行，否则文档会停在 `pending`

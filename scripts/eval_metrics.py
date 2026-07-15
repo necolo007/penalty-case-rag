@@ -15,8 +15,10 @@ def _gold_map(gold: list[dict]) -> dict[str, dict[str, float]]:
     result = {}
     for item in gold:
         qid = item.get("question_id") or item.get("query_id")
+        # 兼容扁平格式与官方 test_gold_labels 的 gold_answer 嵌套
+        payload = item.get("gold_answer") if isinstance(item.get("gold_answer"), dict) else item
         cases = {}
-        for c in item.get("relevant_cases", []):
+        for c in payload.get("relevant_cases", []):
             cases[c["case_id"]] = RELEVANCE_GAIN.get(c.get("relevance", "medium"), 1.0)
         result[qid] = cases
     return result

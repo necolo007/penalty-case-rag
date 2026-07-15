@@ -1,7 +1,21 @@
-.PHONY: install dev db worker api test lint export submission docker-ocr-build docker-ocr-test docker-up
+.PHONY: install dev db worker api test lint export submission eval \
+	docker-ocr-build docker-ocr-test docker-up \
+	link-data import-gold eval-local web-install web-dev web-build
+
+# Windows / uv 环境下保证顶层包可导入
+export PYTHONPATH := .
 
 install:
 	pip install -e ".[dev]"
+
+web-install:
+	cd web && npm install
+
+web-dev:
+	cd web && npm run dev
+
+web-build:
+	cd web && npm run build
 
 db:
 	python scripts/setup_db.py
@@ -21,6 +35,12 @@ lint:
 export:
 	python scripts/export_all.py
 
+link-data:
+	python scripts/link_comp_data.py
+
+import-gold: link-data
+	python scripts/import_gold_cases.py
+
 submission:
 	python scripts/run_batch_submission.py \
 		--input data/eval/test_questions.jsonl \
@@ -31,6 +51,8 @@ eval:
 		--submission data/eval/submission.jsonl \
 		--gold data/eval/test_gold_labels.jsonl \
 		--k 5 10
+
+eval-local: submission eval
 
 docker-up:
 	docker compose up -d postgres redis api worker
