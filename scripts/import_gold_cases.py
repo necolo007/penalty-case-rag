@@ -202,11 +202,14 @@ async def import_cases(
                     )
 
             if embedder is not None:
+                # 纳入 raw_text 截断，避免金标 violation 残缺导致向量语义漂移
+                raw_snip = " ".join((raw_text or "").split())[:1200]
                 emb_text = " ".join(filter(None, [
-                    violation, penalty, " ".join(risk_tags), item.get("case_summary") or "",
+                    violation, penalty, " ".join(risk_tags),
+                    item.get("case_summary") or "", raw_snip,
                 ]))
                 if emb_text.strip():
-                    embed_texts.append(emb_text)
+                    embed_texts.append(emb_text[:2000])
                     embed_case_ids.append(case_id)
 
             ok += 1

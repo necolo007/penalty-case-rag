@@ -39,6 +39,9 @@ class RuleRetriever(BaseRetriever):
         # 合并所有标准表述作为检索词
         standard_terms = " ".join(dict.fromkeys(s["standard_term"] for s in synonyms))
         matched_terms = [s["business_term"] for s in synonyms]
+        risk_ids = list(dict.fromkeys(
+            s["risk_type_id"] for s in synonyms if s.get("risk_type_id")
+        ))
 
         params: list = [standard_terms]
         filter_sql = build_filters(query, params)
@@ -55,6 +58,25 @@ class RuleRetriever(BaseRetriever):
             LIMIT ${len(params)}
         """
         rows = await self.pool.fetch(sql, *params)
+
+        # 全文未命中时，回退到同义词映射的风险类型过滤（保证规则通道有召回）
+        if not rows and risk_ids:
+            params2: list = [risk_ids]
+            filter_sql2 = build_filters(query, params2)
+            params2.append(self.recall_size)
+            sql2 = f"""
+                SELECT {CASE_SELECT_FIELDS},
+                    COALESCE(cardinality(
+                        ARRAY(SELECT UNNEST(c.risk_type_ids) INTERSECT SELECT UNNEST($1::text[]))
+                    ), 0)::float AS score
+                FROM {CASE_FROM}
+                WHERE c.is_insurance_related = TRUE
+                  AND c.risk_type_ids && $1::text[]
+                  {filter_sql2}
+                ORDER BY score DESC, c.overall_confidence DESC
+                LIMIT ${len(params2)}
+            """
+            rows = await self.pool.fetch(sql2, *params2)
 
         results = []
         for row in rows:

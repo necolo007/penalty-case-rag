@@ -51,7 +51,7 @@ export function SearchPage() {
   return (
     <div className="space-y-8">
       <header className="rise-in max-w-3xl">
-        <h1 className="font-display text-4xl font-bold text-foreground sm:text-5xl">案例检索</h1>
+        <h1 className="font-display text-4xl font-bold text-foreground sm:text-5xl">智能检索</h1>
         <p className="mt-3 text-base text-muted-fg">
           输入业务场景或违规描述，系统将改写查询并以四路召回 + RRF 融合返回相似处罚案例。
         </p>

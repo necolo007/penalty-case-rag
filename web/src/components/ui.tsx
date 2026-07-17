@@ -48,20 +48,35 @@ export function ErrorAlert({ message }: { message: string }) {
 }
 
 export function StatusBadge({ status }: { status: string }) {
-  const tone =
-    status === "done" || status === "completed"
-      ? "bg-accent-soft text-accent"
-      : status === "failed" || status === "error"
-        ? "bg-red-50 text-destructive"
-        : status === "pending" || status === "parsing" || status === "extracting"
-          ? "bg-amber-50 text-warning"
+  const failed = status === "failed" || status === "error";
+  const done = status === "done" || status === "completed";
+  const pending = status === "pending";
+  const processing = status === "parsing" || status === "extracting";
+
+  const tone = done
+    ? "bg-accent-soft text-accent ring-1 ring-accent/20"
+    : failed
+      ? "bg-red-100 text-destructive ring-1 ring-red-300 font-bold"
+      : pending
+        ? "bg-amber-50 text-warning ring-1 ring-amber-200"
+        : processing
+          ? "bg-sky-50 text-secondary ring-1 ring-sky-200"
           : "bg-muted text-muted-fg";
 
+  const label =
+    done
+      ? "Done 已完成"
+      : failed
+        ? "Failed 解析失败"
+        : pending
+          ? "Pending 排队中"
+          : processing
+            ? "Processing 解析中"
+            : status;
+
   return (
-    <span
-      className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold tracking-wide ${tone}`}
-    >
-      {status}
+    <span className={`inline-flex items-center rounded-md px-2.5 py-1 text-xs tracking-wide ${tone}`}>
+      {label}
     </span>
   );
 }

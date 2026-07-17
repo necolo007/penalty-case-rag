@@ -12,11 +12,11 @@ export default function App() {
     <Routes>
       <Route element={<AppLayout />}>
         <Route index element={<OverviewPage />} />
+        <Route path="review" element={<ReviewPage />} />
         <Route path="search" element={<SearchPage />} />
         <Route path="cases" element={<CasesPage />} />
         <Route path="cases/:caseId" element={<CaseDetailPage />} />
         <Route path="documents" element={<DocumentsPage />} />
-        <Route path="review" element={<ReviewPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

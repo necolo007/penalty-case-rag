@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Search } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api/client";
 import type { CaseListItem, Paginated } from "../api/types";
 import { CaseCard } from "../components/CaseCard";
 import { EmptyState, ErrorAlert, LoadingBlock } from "../components/ui";
 
 export function CasesPage() {
+  const [searchParams] = useSearchParams();
+  const initialRisk = searchParams.get("risk_type") ?? "";
   const [keyword, setKeyword] = useState("");
   const [regulator, setRegulator] = useState("");
-  const [riskType, setRiskType] = useState("");
+  const [riskType, setRiskType] = useState(initialRisk);
   const [insuranceOnly, setInsuranceOnly] = useState(true);
   const [page, setPage] = useState(1);
   const [data, setData] = useState<Paginated<CaseListItem> | null>(null);
@@ -48,13 +51,16 @@ export function CasesPage() {
   }, [keyword, regulator, riskType, insuranceOnly]);
 
   useEffect(() => {
+    const fromUrl = searchParams.get("risk_type") ?? "";
+    setRiskType(fromUrl);
     void load(1, {
       keyword: "",
       regulator: "",
-      riskType: "",
+      riskType: fromUrl,
       insuranceOnly: true,
     });
-  }, []); // 首屏默认筛选项；后续由「筛选」触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   function onFilter(e: FormEvent) {
     e.preventDefault();
@@ -66,8 +72,8 @@ export function CasesPage() {
   return (
     <div className="space-y-8">
       <header className="rise-in">
-        <h1 className="font-display text-4xl font-bold">案例库</h1>
-        <p className="mt-2 text-muted-fg">浏览、筛选已结构化入库的监管处罚案例。</p>
+        <h1 className="font-display text-4xl font-bold">处罚案例库</h1>
+        <p className="mt-2 text-muted-fg">浏览、筛选和对比已结构化入库的监管处罚案例。</p>
       </header>
 
       <form

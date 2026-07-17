@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.dependencies import init_app_state
-from api.routes import cases, documents, eval as eval_routes, meta, review, search
+from api.routes import cases, documents, meta, review, search
 from core.db import close_pool
 from core.redis_client import close_redis
 
@@ -49,7 +49,6 @@ app.include_router(documents.router, prefix="/api/v1/documents", tags=["文档�
 app.include_router(cases.router, prefix="/api/v1/cases", tags=["案例管理"])
 app.include_router(search.router, prefix="/api/v1/search", tags=["案例检索"])
 app.include_router(review.router, prefix="/api/v1/review", tags=["合规审查"])
-app.include_router(eval_routes.router, prefix="/api/v1/eval", tags=["评测"])
 app.include_router(meta.router, prefix="/api/v1", tags=["元数据"])
 
 # 前端 SPA：`cd web && npm run build` → web/dist（运行时检测，避免启动早于构建）

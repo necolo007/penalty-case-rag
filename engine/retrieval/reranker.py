@@ -21,24 +21,43 @@ class Reranker:
         if self._model is None:
             from FlagEmbedding import FlagReranker  # 延迟导入：local-models 可选依赖
 
-            logger.info("Loading reranker %s on %s", self.model_name, self.device)
+            device = self.device
+            try:
+                import torch
+
+                if device == "cuda" and not torch.cuda.is_available():
+                    logger.warning("CUDA unavailable, reranker falling back to cpu")
+                    device = "cpu"
+            except ImportError:
+                device = "cpu"
+
+            logger.info("Loading reranker %s on %s", self.model_name, device)
             self._model = FlagReranker(
                 self.model_name,
-                use_fp16=(self.device == "cuda"),
-                device=self.device,
+                use_fp16=(device == "cuda"),
+                device=device,
             )
+            self.device = device
         return self._model
 
     def _score_pairs(self, pairs: list[list[str]]) -> list[float]:
-        scores = self._get_model().compute_score(pairs, normalize=True)
+        # batch_size 控制 CPU 峰值；normalize 便于与 RRF 分数语义区分
+        scores = self._get_model().compute_score(pairs, normalize=True, batch_size=16)
         if isinstance(scores, float):
             return [scores]
         return list(scores)
 
     @staticmethod
     def _case_text(result: SearchResult) -> str:
-        parts = [result.violation_behavior, result.penalty_content, " ".join(result.risk_tags)]
-        return " ".join(p for p in parts if p)
+        parts = [
+            result.violation_behavior,
+            result.penalty_content,
+            " ".join(result.risk_tags),
+            " ".join(result.risk_type_ids),
+            result.match_reason,
+        ]
+        text = " ".join(p for p in parts if p)
+        return text[:1500]
 
     async def rerank(self, query_text: str, candidates: list[SearchResult],
                      top_k: int = 10) -> list[SearchResult]:

@@ -7,9 +7,9 @@ from engine.retrieval.base import SearchResult
 
 DEFAULT_CHANNEL_WEIGHTS = {
     "bm25": 1.0,
-    "vector": 1.0,
-    "tag": 0.8,
-    "rule": 1.2,   # 词典命中为确定性映射，权重略高
+    "vector": 1.4,  # 营销话术↔法言法语主要靠语义
+    "tag": 1.1,     # 中文标签召回对齐赛题体系
+    "rule": 1.3,    # 词典命中为确定性映射，权重略高
 }
 
 

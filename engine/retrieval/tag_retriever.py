@@ -16,7 +16,7 @@ from engine.retrieval.filters import CASE_FROM, CASE_SELECT_FIELDS, build_filter
 class TagRetriever(BaseRetriever):
     channel = "tag"
 
-    def __init__(self, pool: asyncpg.Pool, recall_size: int = 50):
+    def __init__(self, pool: asyncpg.Pool, recall_size: int = 80):
         self.pool = pool
         self.recall_size = recall_size
 

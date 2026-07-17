@@ -14,7 +14,7 @@ from engine.retrieval.filters import CASE_SELECT_FIELDS, build_filters
 class VectorRetriever(BaseRetriever):
     channel = "vector"
 
-    def __init__(self, pool: asyncpg.Pool, recall_size: int = 50):
+    def __init__(self, pool: asyncpg.Pool, recall_size: int = 100):
         self.pool = pool
         self.recall_size = recall_size
 

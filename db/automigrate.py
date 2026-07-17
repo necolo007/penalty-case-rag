@@ -65,14 +65,17 @@ async def _recreate_search_trigger(conn: asyncpg.Connection) -> None:
                 to_tsvector('zhparser_config',
                     coalesce(NEW.violation_behavior, '') || ' ' ||
                     coalesce(NEW.penalty_content, '') || ' ' ||
-                    coalesce(NEW.party_name, ''));
+                    coalesce(NEW.party_name, '') || ' ' ||
+                    coalesce(NEW.case_summary, '') || ' ' ||
+                    coalesce(array_to_string(NEW.risk_tags, ' '), ''));
             RETURN NEW;
         END
         $$ LANGUAGE plpgsql;
 
         DROP TRIGGER IF EXISTS trg_cases_search_vector ON penalty_cases;
         CREATE TRIGGER trg_cases_search_vector
-            BEFORE INSERT OR UPDATE OF violation_behavior, penalty_content, party_name
+            BEFORE INSERT OR UPDATE OF violation_behavior, penalty_content, party_name,
+                                       case_summary, risk_tags
             ON penalty_cases
             FOR EACH ROW EXECUTE FUNCTION cases_search_vector_update();
         """

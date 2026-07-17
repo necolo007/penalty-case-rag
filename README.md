@@ -10,7 +10,7 @@
 | 任务2 保险筛选与标签归类 | `engine/classification` | 三维词典加权打分 + 三级风险标签（内外双轨 R001–R008） |
 | 任务3 相似案例检索（核心） | `engine/retrieval` | LLM 改写 → instruct embed → 四路召回（BM25/向量/标签/规则）→ RRF → Reranker |
 | 任务4 合规审查与归因 | `engine/review` | 风险句定位（规则/词典/LLM 三重）+ 逐句检索 + 可追溯审查意见 |
-| 任务5 标注与评测 | `scripts/` + `api/routes/eval.py` | Recall@K / MRR / NDCG / 字段 F1 + 样本增强 |
+| 任务5 标注与评测 | `scripts/` | Recall@K / MRR / NDCG / 字段 F1（CLI 离线评测） |
 
 ## 技术栈
 
@@ -106,7 +106,7 @@ make web-dev          # 或 cd web && npm run dev
 make web-build        # 或 cd web && npm run build
 ```
 
-## 竞赛数据与本地评测
+## 本地评测
 
 （500 金标 + 300 训练查询 + 200 测试题）。**不要把万级 PDF 拷进本项目**。
 
@@ -139,6 +139,9 @@ make eval-local   # = submission + eval → data/eval/eval_report.json
 - **数据库 AutoMigrate**：`AUTO_MIGRATE=true`（默认）时，API/Worker 启动自动执行 `db/migrations/` 建表与种子；关闭后需手动 `python scripts/setup_db.py`
 - 无 LLM Key 时系统可降级运行：查询改写退化为同义词词典扩展，审查生成接口返回 503
 - 无本地模型时：`RERANKER_ENABLED=false` 关闭精排（按 RRF 顺序输出）
+- 启用精排：`pip/uv install -e ".[local-models]"`，并设 `RERANKER_DEVICE=cpu`（无 GPU）或 `cuda`
+- 低成本评测：`make eval-cheap LIMIT=50`；加精排：`make eval-cheap LIMIT=30 RERANK=1`
+- 向量重建（纳入 raw_text）：`make reindex-embed`
 - 切换 Embedding 模型后必须全量重建 `case_embeddings`（向量空间不一致）
 - 上传按 `content_sha256` 去重；解析失败可用 `POST /api/v1/documents/{file_id}/retry` 重试
 - API + Redis + Worker 需同时运行，否则文档会停在 `pending`

@@ -22,13 +22,13 @@ export function formatScore(score: number): string {
 
 export function statusLabel(status: string): string {
   const map: Record<string, string> = {
-    pending: "排队中",
-    parsing: "解析中",
-    extracting: "抽取中",
-    done: "已完成",
-    completed: "已完成",
-    failed: "失败",
-    error: "失败",
+    pending: "排队中 Pending",
+    parsing: "解析中 Processing",
+    extracting: "抽取中 Processing",
+    done: "已完成 Done",
+    completed: "已完成 Done",
+    failed: "解析失败 Failed",
+    error: "解析失败 Failed",
     duplicate: "重复",
   };
   return map[status] ?? status;

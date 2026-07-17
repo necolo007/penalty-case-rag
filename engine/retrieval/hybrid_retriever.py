@@ -53,7 +53,8 @@ class HybridRetriever:
         risk_predictor: RiskPredictor,
         query_encoder: CachedQueryEncoder,
         reranker: Reranker,
-        fusion_size: int = 50,
+        fusion_size: int = 100,
+        rerank_candidates: int = 20,
     ):
         self.bm25 = bm25
         self.vector = vector
@@ -64,6 +65,7 @@ class HybridRetriever:
         self.query_encoder = query_encoder
         self.reranker = reranker
         self.fusion_size = fusion_size
+        self.rerank_candidates = rerank_candidates
 
     async def retrieve(self, query: SearchQuery) -> RetrievalResponse:
         started = time.perf_counter()
@@ -80,12 +82,17 @@ class HybridRetriever:
                 if cid not in predicted_risk_ids:
                     predicted_risk_ids.append(cid)
 
+        # BM25 检索文本：改写结果 + 预测中文标签（提升口语→标签词命中）
+        bm25_text = rewritten_query
+        if predicted_cn_tags:
+            bm25_text = f"{rewritten_query} {' '.join(predicted_cn_tags)}"
+
         # 2. 改写文本向量化（instruct 非对称编码 + Redis 缓存）
         query_embedding = await self.query_encoder.encode_query(rewritten_query)
 
         # 3. 四路并行召回
         channel_tasks = {
-            "bm25": self.bm25.retrieve(query, search_text=rewritten_query),
+            "bm25": self.bm25.retrieve(query, search_text=bm25_text),
             "vector": self.vector.retrieve(query, query_embedding=query_embedding),
             "tag": self.tag.retrieve(
                 query,
@@ -107,9 +114,10 @@ class HybridRetriever:
         # 4. RRF 融合
         fused = reciprocal_rank_fusion(channel_results, top_k=self.fusion_size)
 
-        # 5. 精排（改写后文本作为精排 query，语义更接近案例表述）
+        # 5. 精排（仅对 RRF Top-N 精排，控制 CPU 耗时；改写后文本作 query）
         if query.use_reranker:
-            top = await self.reranker.rerank(rewritten_query, fused, top_k=query.top_k)
+            candidates = fused[: self.rerank_candidates]
+            top = await self.reranker.rerank(rewritten_query, candidates, top_k=query.top_k)
         else:
             top = fused[: query.top_k]
 
