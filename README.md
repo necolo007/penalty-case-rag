@@ -23,8 +23,10 @@
 ## 快速启动
 
 ```bash
-# 1. 配置环境变量（API Key 禁止入库）
+# 1. 配置环境变量
 cp .env.example .env   # 填入 LLM_API_KEY / EMBEDDING_API_KEY
+# LLM查看ds token官网：https://platform.deepseek.com/
+# EMBEDDING查看tokendance官网：https://tokendance.space/
 
 # 2. 启动基础设施 + 依赖
 docker compose up -d postgres redis
@@ -105,34 +107,6 @@ make web-dev          # 或 cd web && npm run dev
 # 生产构建（产物 web/dist，由 FastAPI 托管）
 make web-build        # 或 cd web && npm run build
 ```
-
-## 本地评测
-
-（500 金标 + 300 训练查询 + 200 测试题）。**不要把万级 PDF 拷进本项目**。
-
-```bash
-# 1. 将评测文件复制到 data/eval/（也可设置 COMP_DATA_DIR）
-make link-data
-
-# 2. 导入官方金标 C001–C500（保留官方 ID，写入向量；需 Embedding Key）
-#    自动关联赛题包 raw_text/{file_id}.txt
-make import-gold
-
-# 3. API 启动后生成 submission 并评测
-make api          # 另开终端
-make eval-local   # = submission + eval → data/eval/eval_report.json
-```
-
-相关脚本：
-
-| 命令 | 作用 |
-|------|------|
-| `scripts/link_comp_data.py` | 接入配套评测文件 |
-| `scripts/import_gold_cases.py` | 导入金标 + embedding |
-| `scripts/run_batch_submission.py` | 生成 `submission.jsonl` |
-| `scripts/eval_retrieval.py` | Recall@K / MRR / NDCG |
-
-标签：库内 `risk_type_ids` 存 R001–R008；提交 `risk_type` 默认输出配套中文标签（`SUBMISSION_RISK_STYLE=cn`）。
 
 ## 开发说明
 
