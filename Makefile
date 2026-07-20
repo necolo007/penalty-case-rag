@@ -1,7 +1,6 @@
-.PHONY: install dev db worker api test lint export submission eval \
-	docker-ocr-build docker-ocr-test docker-up \
-	link-data import-gold eval-local web-install web-dev web-build \
-	eval-cheap reindex-embed
+.PHONY: install install-local-models db worker api test lint export \
+	docker-ocr-build docker-ocr-test docker-up docker-postgres-build docker-postgres-up \
+	link-data import-gold web-install web-dev web-build reindex-embed
 
 # Windows / uv 环境下保证顶层包可导入
 export PYTHONPATH := .
@@ -27,6 +26,7 @@ db:
 api:
 	uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 
+# 本机轻量 Worker（pdfplumber，无 OCR）。扫描件请用 docker-ocr-build + docker compose up worker
 worker:
 	arq pipeline.tasks.ingest.WorkerSettings
 
@@ -44,27 +44,6 @@ link-data:
 
 import-gold: link-data
 	python scripts/import_gold_cases.py
-
-submission:
-	python scripts/run_batch_submission.py \
-		--input data/eval/test_questions.jsonl \
-		--output data/eval/submission.jsonl
-
-eval:
-	python scripts/eval_retrieval.py \
-		--submission data/eval/submission.jsonl \
-		--gold data/eval/test_gold_labels.jsonl \
-		--k 5 10
-
-eval-local: submission eval
-
-# 低成本评测：不调 LLM（仅 embedding + 四路召回），适合日常迭代
-# 例：make eval-cheap LIMIT=50
-# 精排：make eval-cheap LIMIT=50 RERANK=1
-LIMIT ?= 50
-RERANK ?= 0
-eval-cheap:
-	python scripts/eval_retrieval_local.py --limit $(LIMIT) $(if $(filter 1,$(RERANK)),--rerank,)
 
 reindex-embed:
 	python scripts/reindex_embeddings.py

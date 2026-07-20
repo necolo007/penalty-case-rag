@@ -43,11 +43,12 @@ async def main():
     pool = await create_pool()
     llm = None if args.no_llm or not settings.LLM_API_KEY else create_llm_client(settings)
 
-    enable_ocr = (
-        importlib.util.find_spec("rapidocr_onnxruntime") is not None
-        or importlib.util.find_spec("rapidocr") is not None
-        or importlib.util.find_spec("paddleocr") is not None
-    )
+    enable_ocr = importlib.util.find_spec("rapidocr_onnxruntime") is not None
+    if not enable_ocr:
+        print(
+            "OCR unavailable on host — scanned PDFs need Docker Worker: "
+            "docker compose up -d worker"
+        )
     orchestrator = IngestOrchestrator(
         pool=pool,
         router=DocumentRouter(

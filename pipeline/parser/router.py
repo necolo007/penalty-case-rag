@@ -3,7 +3,7 @@
 PDF 分流：
   公示表 → TableParser (pdfplumber)
   决定书 → MinerUParser（不可用时降级 pdfplumber 纯文本）
-  扫描件 / 低置信度 → PaddleOCRFallback
+  扫描件 / 低置信度 → OCRFallback（RapidOCR，仅 Docker Worker）
 """
 
 import logging

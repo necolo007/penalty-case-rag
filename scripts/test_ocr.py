@@ -1,8 +1,8 @@
-"""OCR 冒烟测试（在 OCR Worker 容器内执行）。
+"""OCR 冒烟测试（仅在 OCR Worker 容器内执行）。
 
 用法：
-  python scripts/test_ocr.py
-  python scripts/test_ocr.py /app/uploads/scan_sample.pdf
+  docker compose run --rm worker python scripts/test_ocr.py
+  docker compose run --rm worker python scripts/test_ocr.py /app/uploads/scan_sample.pdf
 """
 
 from __future__ import annotations
@@ -17,21 +17,16 @@ def _check_imports() -> None:
 
         print("[OK] rapidocr_onnxruntime imported")
     except ImportError:
-        print("[MISS] rapidocr_onnxruntime")
-
-    try:
-        import paddleocr  # noqa: F401
-
-        print("[OK] paddleocr imported")
-    except ImportError:
-        print("[MISS] paddleocr (optional)")
+        print("[MISS] rapidocr_onnxruntime — run inside Docker OCR Worker")
+        raise SystemExit(1)
 
     try:
         import fitz
 
-        print(f"[OK] pymupdf imported ({fitz.__doc__.split()[0] if fitz.__doc__ else 'ok'})")
+        print(f"[OK] pymupdf imported ({getattr(fitz, 'version', ('?',))[0]})")
     except ImportError:
         print("[MISS] pymupdf")
+        raise SystemExit(1)
 
 
 def _run_ocr(file_path: str) -> None:

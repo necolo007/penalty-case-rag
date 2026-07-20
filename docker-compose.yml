@@ -60,7 +60,7 @@ services:
       - ./uploads:/app/uploads
       - ./data:/app/data
 
-  # ARQ Worker（MinerU + PaddleOCR，WSL/Linux Docker 测试 OCR）
+  # ARQ Worker（RapidOCR + pdfplumber；扫描件请用此服务，勿本机装 OCR）
   worker:
     build:
       context: .

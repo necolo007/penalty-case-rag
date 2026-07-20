@@ -86,18 +86,15 @@ async def startup(ctx):
     embedder = create_embedding_provider(settings)
 
     # Worker 环境无 MinerU/OCR 时可自动降级到 pdfplumber 纯文本。
-    # Paddle + Torch(MinerU) 同进程易 SIGSEGV：若两者皆在，优先保留 OCR。
+    # OCR 仅存在于 Docker Worker（RapidOCR）；本机 Worker 勿装 OCR 包。
     try:
         import importlib.util
         enable_mineru = importlib.util.find_spec("magic_pdf") is not None
-        enable_ocr = (
-            importlib.util.find_spec("rapidocr_onnxruntime") is not None
-            or importlib.util.find_spec("paddleocr") is not None
-        )
+        enable_ocr = importlib.util.find_spec("rapidocr_onnxruntime") is not None
         if enable_mineru and enable_ocr:
             logger.warning(
-                "Both magic_pdf and OCR backend detected; disabling MinerU to avoid "
-                "Paddle/Torch SIGSEGV. Use separate workers for MinerU if needed."
+                "Both magic_pdf and RapidOCR detected; disabling MinerU to avoid "
+                "Torch/OCR conflict. Prefer Dockerfile.worker.ocr for scans."
             )
             enable_mineru = False
     except Exception:  # noqa: BLE001

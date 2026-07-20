@@ -12,8 +12,8 @@ COPY api ./api
 COPY scripts ./scripts
 COPY db ./db
 
-# Worker 需要解析栈；MinerU/PaddleOCR 体积大，GPU 镜像可换 base 为 nvidia/cuda
+# Worker 需要解析栈；OCR 请用 Dockerfile.worker.ocr。可选 MinerU：
 RUN pip install --no-cache-dir -e . && \
-    pip install --no-cache-dir -e ".[parsing]" || echo "parsing extras skipped (fallback to pdfplumber)"
+    pip install --no-cache-dir -e ".[parsing-mineru]" || echo "parsing-mineru skipped (fallback to pdfplumber)"
 
 CMD ["arq", "pipeline.tasks.ingest.WorkerSettings"]
