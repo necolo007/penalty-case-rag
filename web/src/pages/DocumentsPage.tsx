@@ -1,11 +1,103 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { Eye, RefreshCw, Upload, X } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState, type DragEvent } from "react";
+import {
+  Eye,
+  FileUp,
+  Loader2,
+  RefreshCw,
+  Sparkles,
+  Trash2,
+  X,
+} from "lucide-react";
 import { api, ApiError } from "../api/client";
-import type { DocumentItem, Paginated } from "../api/types";
+import type { DocumentItem, ExtractedCaseSummary, Paginated } from "../api/types";
+import { formatConfidencePct, normalizeConfidence } from "../lib/confidence";
 import { formatDate, statusLabel } from "../lib/format";
+import { ConfidenceBar } from "../components/ConfidenceBar";
+import { RiskTypeChip } from "../components/RiskTypeChip";
 import { EmptyState, ErrorAlert, LoadingBlock, StatusBadge } from "../components/ui";
 
+type QueuedFile = {
+  id: string;
+  file: File;
+};
+
+const ACCEPT = ".pdf,.docx,.html,.htm";
+const ACCEPT_MIME = [
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "text/html",
+];
+
+function isAccepted(file: File): boolean {
+  const ext = file.name.toLowerCase().slice(file.name.lastIndexOf("."));
+  return [".pdf", ".docx", ".html", ".htm"].includes(ext) || ACCEPT_MIME.includes(file.type);
+}
+
+function fieldConfidenceLabel(
+  confidences: Record<string, string | number> | null | undefined,
+  key: string,
+): string | null {
+  if (!confidences || confidences[key] == null) return null;
+  return formatConfidencePct(confidences[key]);
+}
+
+function ExtractedFields({ cases }: { cases: ExtractedCaseSummary[] }) {
+  if (!cases.length) {
+    return (
+      <p className="mt-3 rounded-xl bg-muted/60 px-3 py-3 text-sm text-muted-fg">
+        尚无结构化抽取结果。解析完成后将展示当事人、文号、违规行为等字段。
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-3 space-y-4">
+      {cases.map((c) => (
+        <div key={c.case_id} className="rounded-xl border border-border/80 bg-slate-50/80 p-3">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <span className="font-mono text-xs text-muted-fg">{c.case_id}</span>
+            <ConfidenceBar value={c.overall_confidence} className="max-w-[10rem]" />
+          </div>
+          <dl className="space-y-2.5 text-sm">
+            {(
+              [
+                ["当事人", c.party_name, "party_name"],
+                ["文号", c.penalty_doc_no, "penalty_doc_no"],
+                ["违规行为", c.violation_behavior, "violation_behavior"],
+                ["处罚内容", c.penalty_content || c.fine_amount, "penalty_content"],
+                ["监管机构", c.regulator, "regulator"],
+                ["法律依据", c.legal_basis, "legal_basis"],
+              ] as const
+            ).map(([label, value, key]) => {
+              const fc = fieldConfidenceLabel(c.field_confidences, key);
+              return (
+                <div key={key} className="rounded-lg border border-border/60 bg-white px-3 py-2">
+                  <dt className="text-xs text-muted-fg">{label}</dt>
+                  <dd className="mt-0.5 flex flex-wrap items-baseline justify-between gap-2">
+                    <span className="font-medium text-foreground">{value || "—"}</span>
+                    {fc ? (
+                      <span className="text-xs font-medium text-amber-700">置信度 {fc}</span>
+                    ) : null}
+                  </dd>
+                </div>
+              );
+            })}
+          </dl>
+          {(c.risk_type_ids?.length || c.risk_tags?.length) ? (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {(c.risk_type_ids?.length ? c.risk_type_ids : c.risk_tags ?? []).map((t) => (
+                <RiskTypeChip key={t} idOrTag={t} />
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function DocumentsPage() {
+  const inputId = useId();
   const [data, setData] = useState<Paginated<DocumentItem> | null>(null);
   const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
@@ -15,9 +107,12 @@ export function DocumentsPage() {
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
   const [regulator, setRegulator] = useState("");
   const [publishDate, setPublishDate] = useState("");
+  const [queue, setQueue] = useState<QueuedFile[]>([]);
+  const [dragOver, setDragOver] = useState(false);
   const [detail, setDetail] = useState<DocumentItem | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const queueIdRef = useRef(0);
 
   const load = useCallback(
     async (p = 1) => {
@@ -44,22 +139,51 @@ export function DocumentsPage() {
     void load(1);
   }, [load]);
 
-  async function onUpload(e: FormEvent) {
-    e.preventDefault();
-    const file = fileRef.current?.files?.[0];
-    if (!file) {
+  function addFiles(fileList: FileList | File[] | null) {
+    if (!fileList) return;
+    const incoming = Array.from(fileList).filter(isAccepted);
+    if (!incoming.length) {
       setError("请选择 PDF / DOCX / HTML 文件");
+      return;
+    }
+    setError(null);
+    setQueue((prev) => {
+      const next = [...prev];
+      for (const file of incoming) {
+        const dup = next.some(
+          (q) => q.file.name === file.name && q.file.size === file.size,
+        );
+        if (dup) continue;
+        queueIdRef.current += 1;
+        next.push({ id: `q-${queueIdRef.current}`, file });
+      }
+      return next;
+    });
+  }
+
+  function removeQueued(id: string) {
+    setQueue((prev) => prev.filter((q) => q.id !== id));
+  }
+
+  async function startAnalysis() {
+    if (!queue.length) {
+      setError("请先拖入或选择待分析文件");
       return;
     }
     setUploading(true);
     setError(null);
     setUploadMsg(null);
+    const results: string[] = [];
     try {
-      const res = await api.uploadDocument(file, {
-        regulator: regulator || undefined,
-        publish_date: publishDate || undefined,
-      });
-      setUploadMsg(`${res.message}（${res.file_id}）`);
+      for (const item of queue) {
+        const res = await api.uploadDocument(item.file, {
+          regulator: regulator || undefined,
+          publish_date: publishDate || undefined,
+        });
+        results.push(`${item.file.name} → ${res.message}`);
+      }
+      setUploadMsg(`已提交 ${results.length} 个文件开始智能分析`);
+      setQueue([]);
       if (fileRef.current) fileRef.current.value = "";
       await load(1);
     } catch (err) {
@@ -78,6 +202,17 @@ export function DocumentsPage() {
     }
   }
 
+  async function onDeleteDoc(fileId: string) {
+    if (!window.confirm("确认删除该文档及其关联案例？")) return;
+    try {
+      await api.deleteDocument(fileId);
+      if (detail?.file_id === fileId) setDetail(null);
+      await load(page);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "删除失败");
+    }
+  }
+
   async function openDetail(fileId: string) {
     setDetailLoading(true);
     setError(null);
@@ -91,6 +226,12 @@ export function DocumentsPage() {
     }
   }
 
+  function onDrop(e: DragEvent) {
+    e.preventDefault();
+    setDragOver(false);
+    addFiles(e.dataTransfer.files);
+  }
+
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.page_size)) : 1;
 
   return (
@@ -98,25 +239,75 @@ export function DocumentsPage() {
       <header className="rise-in">
         <h1 className="font-display text-4xl font-bold">数据入库</h1>
         <p className="mt-2 text-muted-fg">
-          批量上传、解析、纠错、入库。状态栏高亮展示完成 / 失败 / 排队 / 解析中。
+          拖拽或批量选择处罚文书，确认后开始智能分析；详情面板展示结构化抽取字段。
         </p>
       </header>
 
-      <form onSubmit={onUpload} className="surface rounded-3xl p-6">
+      <section className="surface space-y-5 rounded-3xl p-6">
         <h2 className="font-display text-xl font-semibold">上传文档</h2>
-        <div className="mt-4 grid gap-4 sm:grid-cols-3">
-          <div className="sm:col-span-3">
-            <label htmlFor="file" className="mb-1.5 block text-xs font-semibold text-muted-fg">
-              文件（PDF / DOCX / HTML）
-            </label>
+
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={onDrop}
+          className={[
+            "rounded-2xl border-2 border-dashed px-6 py-12 text-center transition duration-200",
+            dragOver ? "border-primary bg-primary/5 scale-[1.01]" : "border-border bg-slate-50/80",
+          ].join(" ")}
+        >
+          <FileUp className="mx-auto h-9 w-9 text-primary" aria-hidden />
+          <p className="mt-3 text-sm font-semibold text-foreground">拖拽 PDF / DOCX / HTML 到此处</p>
+          <p className="mt-1 text-xs text-muted-fg">支持批量添加；也可点击下方按钮选择文件</p>
+          <label
+            htmlFor={inputId}
+            className="mt-5 inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-xl border border-border bg-white px-4 text-sm font-medium hover:bg-muted"
+          >
+            批量选择文件
             <input
-              id="file"
+              id={inputId}
               ref={fileRef}
               type="file"
-              accept=".pdf,.docx,.html,.htm"
-              className="block w-full text-sm file:mr-4 file:min-h-11 file:cursor-pointer file:rounded-xl file:border-0 file:bg-primary file:px-4 file:text-sm file:font-semibold file:text-white hover:file:bg-primary-deep"
+              accept={ACCEPT}
+              multiple
+              className="sr-only"
+              onChange={(e) => {
+                addFiles(e.target.files);
+                e.target.value = "";
+              }}
             />
-          </div>
+          </label>
+        </div>
+
+        {queue.length > 0 ? (
+          <ul className="space-y-2" aria-label="待上传文件列表">
+            {queue.map((q) => (
+              <li
+                key={q.id}
+                className="flex items-center justify-between gap-3 rounded-xl border border-border bg-white px-3 py-2.5"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{q.file.name}</p>
+                  <p className="text-xs text-muted-fg">
+                    {(q.file.size / 1024).toFixed(1)} KB
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => removeQueued(q.id)}
+                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-xl border border-border text-muted-fg hover:bg-red-50 hover:text-destructive"
+                  aria-label={`移除 ${q.file.name}`}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
+        <div className="grid gap-4 sm:grid-cols-3">
           <div>
             <label htmlFor="doc-reg" className="mb-1.5 block text-xs font-semibold text-muted-fg">
               监管机构（可选）
@@ -140,23 +331,24 @@ export function DocumentsPage() {
               className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
             />
           </div>
-          <div className="flex items-end">
-            <button
-              type="submit"
-              disabled={uploading}
-              className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-accent px-4 text-sm font-semibold text-white hover:brightness-110 disabled:opacity-60"
-            >
-              <Upload className="h-4 w-4" />
-              {uploading ? "上传中…" : "提交入库"}
-            </button>
-          </div>
         </div>
+
+        <button
+          type="button"
+          disabled={uploading || queue.length === 0}
+          onClick={() => void startAnalysis()}
+          className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-accent px-5 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-50 sm:w-auto"
+        >
+          {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+          {uploading ? "提交中…" : "开始智能分析"}
+        </button>
+
         {uploadMsg ? (
-          <p className="mt-3 text-sm text-accent" role="status">
+          <p className="text-sm text-accent" role="status">
             {uploadMsg}
           </p>
         ) : null}
-      </form>
+      </section>
 
       <div className="flex flex-wrap items-center gap-3">
         <label htmlFor="status" className="text-sm font-medium text-muted-fg">
@@ -249,6 +441,14 @@ export function DocumentsPage() {
                             {failed ? "重新解析" : "重试"}
                           </button>
                         ) : null}
+                        <button
+                          type="button"
+                          onClick={() => void onDeleteDoc(d.file_id)}
+                          className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-border bg-white px-2.5 text-xs font-medium text-destructive hover:bg-red-50"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          删除
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -325,25 +525,35 @@ export function DocumentsPage() {
                     错误：{detail.parse_error}
                   </p>
                 ) : null}
-              </section>
-              <section className="p-5">
-                <h3 className="text-sm font-semibold text-muted-fg">结构化信息</h3>
-                <dl className="mt-3 space-y-3 text-sm">
+                <dl className="mt-4 space-y-2 text-sm">
                   {[
                     ["文件名", detail.file_name],
                     ["类型", detail.source_type],
                     ["状态", statusLabel(detail.parse_status)],
-                    ["监管机构", detail.regulator || "—"],
-                    ["发布日期", formatDate(detail.publish_date)],
-                    ["创建时间", formatDate(detail.created_at)],
-                    ["更新时间", formatDate(detail.updated_at)],
+                    ["上传时间", formatDate(detail.created_at)],
                   ].map(([k, v]) => (
-                    <div key={k} className="rounded-xl border border-border/70 bg-slate-50 px-3 py-2">
+                    <div key={k} className="rounded-lg border border-border/60 bg-slate-50 px-3 py-2">
                       <dt className="text-xs text-muted-fg">{k}</dt>
-                      <dd className="mt-0.5 font-medium text-foreground">{v}</dd>
+                      <dd className="mt-0.5 font-medium">{v}</dd>
                     </div>
                   ))}
                 </dl>
+              </section>
+              <section className="p-5">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold text-muted-fg">结构化抽取</h3>
+                  {detail.cases?.[0]?.overall_confidence != null ? (
+                    <span className="text-xs text-muted-fg">
+                      整体置信度{" "}
+                      {formatConfidencePct(detail.cases[0].overall_confidence)}
+                      {normalizeConfidence(detail.cases[0].overall_confidence) != null &&
+                      normalizeConfidence(detail.cases[0].overall_confidence)! >= 0.85
+                        ? " · 高"
+                        : ""}
+                    </span>
+                  ) : null}
+                </div>
+                <ExtractedFields cases={detail.cases ?? []} />
                 {(detail.parse_status === "failed" || detail.parse_status === "pending") && (
                   <button
                     type="button"

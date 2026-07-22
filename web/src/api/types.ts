@@ -57,6 +57,7 @@ export interface CaseListItem {
   penalty_doc_no: string | null;
   violation_behavior: string | null;
   penalty_content: string | null;
+  fine_amount?: string | null;
   regulator: string | null;
   publish_date: string | null;
   risk_tags: string[] | null;
@@ -64,6 +65,23 @@ export interface CaseListItem {
   is_insurance_related: boolean | null;
   overall_confidence: number | null;
   source_file: string | null;
+}
+
+export interface ExtractedCaseSummary {
+  case_id: string;
+  party_name: string | null;
+  penalty_doc_no: string | null;
+  violation_behavior: string | null;
+  penalty_content: string | null;
+  fine_amount?: string | null;
+  regulator: string | null;
+  publish_date: string | null;
+  legal_basis?: string | null;
+  risk_tags: string[] | null;
+  risk_type_ids: string[] | null;
+  overall_confidence: number | null;
+  field_confidences?: Record<string, string | number> | null;
+  extraction_method?: string | null;
 }
 
 export interface Paginated<T> {
@@ -92,6 +110,7 @@ export interface DocumentItem {
   created_at?: string | null;
   updated_at?: string | null;
   raw_text_path?: string | null;
+  cases?: ExtractedCaseSummary[];
 }
 
 export interface UploadResponse {

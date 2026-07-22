@@ -145,13 +145,49 @@ class ExtractorEngine:
 
     # ---------- 校验与置信度 ----------
 
-    def _validate(self, case: ExtractedCase) -> None:
-        filled = sum(1 for f in CORE_FIELDS if getattr(case, f))
-        base = filled / len(CORE_FIELDS)
+    # 字段级档位 → 数值；overall 由加权平均得到，避免「字段齐了就 100%」
+    _LEVEL_SCORE = {
+        FieldConfidence.HIGH.value: 0.92,
+        FieldConfidence.MEDIUM.value: 0.72,
+        FieldConfidence.LOW.value: 0.38,
+    }
+    _FIELD_WEIGHTS = {
+        "party_name": 1.5,
+        "violation_behavior": 1.5,
+        "penalty_content": 1.5,
+        "regulator": 1.2,
+        "penalty_doc_no": 1.0,
+        "publish_date": 0.6,
+        "fine_amount": 0.5,
+        "legal_basis": 0.5,
+    }
 
-        # 文号格式加分项
-        bonus = 0.1 if case.penalty_doc_no else 0.0
-        case.overall_confidence = round(min(base + bonus, 1.0), 3)
+    def _validate(self, case: ExtractedCase) -> None:
+        score = 0.0
+        total_w = 0.0
+        for field_name, weight in self._FIELD_WEIGHTS.items():
+            raw = getattr(case, field_name, None)
+            filled = bool(str(raw).strip()) if raw is not None else False
+            total_w += weight
+            if not filled:
+                case.field_confidences.setdefault(field_name, FieldConfidence.LOW.value)
+                continue
+            level = case.field_confidences.get(field_name, FieldConfidence.MEDIUM.value)
+            score += weight * self._LEVEL_SCORE.get(level, 0.55)
+
+        # 抽取路径微调：纯正则略降、表格/金标略升，避免全部顶满
+        method_adj = {
+            "regex": -0.03,
+            "hybrid": 0.0,
+            "table": 0.02,
+            "gold": 0.04,
+            "llm": -0.02,
+        }.get(case.extraction_method, 0.0)
+
+        if total_w <= 0:
+            case.overall_confidence = 0.0
+            return
+        case.overall_confidence = round(min(max(score / total_w + method_adj, 0.05), 0.98), 3)
 
     def _infer_institution_type(self, case: ExtractedCase) -> None:
         name = case.party_name

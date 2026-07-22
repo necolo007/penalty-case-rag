@@ -1,14 +1,16 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   FileText,
   FolderOpen,
   LayoutDashboard,
+  Loader2,
   Scale,
   Search,
   ShieldCheck,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
+import { useReviewSession } from "../lib/reviewSession";
 
 const mainLinks = [
   { to: "/", label: "智能驾驶舱", icon: LayoutDashboard, end: true },
@@ -21,6 +23,12 @@ const mainLinks = [
 export function AppLayout() {
   const [healthOk, setHealthOk] = useState<boolean | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const review = useReviewSession();
+  const location = useLocation();
+  const reviewBusy = review.loading;
+  const reviewReady =
+    review.justFinished && !review.loading && Boolean(review.review || review.materialReport);
+  const showAwayBanner = (reviewBusy || reviewReady) && !location.pathname.startsWith("/review");
 
   useEffect(() => {
     let cancelled = false;
@@ -69,7 +77,24 @@ export function AppLayout() {
             {mainLinks.map(({ to, label, icon: Icon, end }) => (
               <NavLink key={to} to={to} end={end} className={navClass} onClick={() => setMobileOpen(false)}>
                 <Icon className="h-4 w-4 shrink-0" aria-hidden />
-                {label}
+                <span className="flex-1 text-left">{label}</span>
+                {to === "/review" && reviewBusy ? (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-md bg-sky-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-sky-200"
+                    aria-label="审查进行中"
+                  >
+                    <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+                    分析中
+                  </span>
+                ) : null}
+                {to === "/review" && reviewReady ? (
+                  <span
+                    className="rounded-md bg-emerald-500/25 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-200"
+                    aria-label="审查已完成"
+                  >
+                    已完成
+                  </span>
+                ) : null}
               </NavLink>
             ))}
           </div>
@@ -100,12 +125,10 @@ export function AppLayout() {
         跳到主内容
       </a>
 
-      {/* Desktop sidebar */}
       <aside className="sticky top-0 z-40 hidden h-screen w-64 shrink-0 flex-col bg-primary-deep lg:flex">
         {sidebar}
       </aside>
 
-      {/* Mobile top bar */}
       <div className="sticky top-0 z-40 flex items-center justify-between border-b border-border/80 bg-white/90 px-4 py-3 backdrop-blur-xl lg:hidden">
         <NavLink to="/" className="font-display text-xl font-bold text-primary no-underline">
           案库
@@ -133,6 +156,33 @@ export function AppLayout() {
       ) : null}
 
       <div className="min-w-0 flex-1">
+        {showAwayBanner ? (
+          <div
+            className={[
+              "border-b px-4 py-2.5 text-sm sm:px-6",
+              reviewBusy
+                ? "border-sky-200 bg-sky-50 text-sky-950"
+                : "border-emerald-200 bg-emerald-50 text-emerald-950",
+            ].join(" ")}
+            role="status"
+            aria-live="polite"
+          >
+            <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-2">
+                {reviewBusy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
+                {reviewBusy
+                  ? "智能审查仍在后台分析，返回后可继续查看进度与结果。"
+                  : "智能审查已完成，点击返回查看报告。"}
+              </span>
+              <NavLink
+                to="/review"
+                className="inline-flex min-h-9 items-center rounded-lg bg-white/80 px-3 text-xs font-semibold text-primary no-underline ring-1 ring-border hover:bg-white"
+              >
+                返回智能审查
+              </NavLink>
+            </div>
+          </div>
+        ) : null}
         <main id="main" className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-10">
           <Outlet />
         </main>

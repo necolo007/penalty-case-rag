@@ -230,7 +230,47 @@ async def get_document(file_id: str, pool=Depends(get_pool)):
     )
     if row is None:
         raise HTTPException(404, detail="document not found")
-    return dict(row)
+    data = dict(row)
+    cases = await pool.fetch(
+        """
+        SELECT case_id, party_name, penalty_doc_no, violation_behavior,
+               penalty_content, fine_amount, regulator, publish_date, legal_basis,
+               risk_tags, risk_type_ids, overall_confidence, field_confidences,
+               extraction_method
+        FROM penalty_cases
+        WHERE file_id = $1
+        ORDER BY case_id
+        """,
+        file_id,
+    )
+    data["cases"] = [dict(c) for c in cases]
+    return data
+
+
+@router.delete("/{file_id}", status_code=204)
+async def delete_document(file_id: str, pool=Depends(get_pool)):
+    """删除文档及其关联案例（入库队列/失败文档清理）。"""
+    exists = await pool.fetchval("SELECT 1 FROM documents WHERE file_id = $1", file_id)
+    if not exists:
+        raise HTTPException(404, detail="document not found")
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            case_ids = [
+                r["case_id"]
+                for r in await conn.fetch(
+                    "SELECT case_id FROM penalty_cases WHERE file_id = $1", file_id,
+                )
+            ]
+            if case_ids:
+                await conn.execute(
+                    "DELETE FROM review_case_refs WHERE case_id = ANY($1::text[])",
+                    case_ids,
+                )
+                await conn.execute(
+                    "DELETE FROM penalty_cases WHERE file_id = $1", file_id,
+                )
+            await conn.execute("DELETE FROM documents WHERE file_id = $1", file_id)
+    return None
 
 
 @router.get("")

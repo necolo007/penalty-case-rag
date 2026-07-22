@@ -98,6 +98,33 @@ export const api = {
 
   getCase: (caseId: string) => request<CaseDetail>(`/cases/${encodeURIComponent(caseId)}`),
 
+  exportCasesTable: async (
+    params: Record<string, string | number | boolean | undefined>,
+    format: "csv" | "xlsx" = "csv",
+  ) => {
+    const sp = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v === undefined || v === null || v === "") continue;
+      sp.set(k, String(v));
+    }
+    sp.set("format", format);
+    const res = await fetch(`${API_BASE}/cases/export/table?${sp.toString()}`);
+    if (!res.ok) {
+      const body = await res.text();
+      throw new ApiError(res.status, body || `HTTP ${res.status}`, body);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") ?? "";
+    const match = /filename="?([^"]+)"?/i.exec(cd);
+    const filename = match?.[1] ?? `penalty_cases.${format}`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
+
   listDocuments: (params: {
     page?: number;
     page_size?: number;
@@ -121,6 +148,9 @@ export const api = {
     if (meta?.publish_date) fd.append("publish_date", meta.publish_date);
     return request<UploadResponse>("/documents/upload", { method: "POST", body: fd });
   },
+
+  deleteDocument: (fileId: string) =>
+    request<void>(`/documents/${encodeURIComponent(fileId)}`, { method: "DELETE" }),
 
   retryDocument: (fileId: string) =>
     request<UploadResponse>(`/documents/${encodeURIComponent(fileId)}/retry`, {

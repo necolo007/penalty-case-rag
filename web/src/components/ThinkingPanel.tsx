@@ -31,9 +31,17 @@ type Props = {
   /** 请求结束后保留「已思考」面板 */
   finished?: boolean;
   elapsedMs?: number | null;
+  /** 跨路由恢复时沿用会话开始时间，避免计时归零 */
+  startedAt?: number | null;
 };
 
-export function ThinkingPanel({ active, queryHint, finished = false, elapsedMs }: Props) {
+export function ThinkingPanel({
+  active,
+  queryHint,
+  finished = false,
+  elapsedMs,
+  startedAt,
+}: Props) {
   const [step, setStep] = useState(-1);
   const [streamText, setStreamText] = useState("");
   const [expanded, setExpanded] = useState(true);
@@ -47,8 +55,8 @@ export function ThinkingPanel({ active, queryHint, finished = false, elapsedMs }
     setStep(0);
     setStreamText("");
     setExpanded(true);
-    setElapsedSec(0);
-    startRef.current = Date.now();
+    startRef.current = startedAt && startedAt > 0 ? startedAt : Date.now();
+    setElapsedSec(Math.max(1, Math.round((Date.now() - startRef.current) / 1000)));
     scriptRef.current = buildThinkingScript(queryHint);
 
     const stepTimer = window.setInterval(() => {
@@ -69,7 +77,7 @@ export function ThinkingPanel({ active, queryHint, finished = false, elapsedMs }
       window.clearInterval(stepTimer);
       window.clearInterval(clock);
     };
-  }, [active, queryHint]);
+  }, [active, queryHint, startedAt]);
 
   // 到达最后一步后开始打字流式
   useEffect(() => {

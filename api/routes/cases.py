@@ -1,9 +1,13 @@
 """案例管理路由：查询 / 筛选 / 人工修正 / 导出。"""
 
+import csv
+import io
+import json
+from datetime import date, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, StreamingResponse
 
 from api.dependencies import get_pool
 from api.schemas.models import CasePatchRequest
@@ -16,6 +20,94 @@ PATCHABLE_FIELDS = [
     "party_name", "penalty_doc_no", "violation_behavior", "penalty_content",
     "regulator", "legal_basis", "risk_tags", "risk_type_ids", "is_insurance_related",
 ]
+
+# 列表可排序字段 → SQL 表达式（含处罚金额数值化）
+_FINE_AMOUNT_SORT_EXPR = """
+CASE
+  WHEN c.fine_amount IS NULL OR TRIM(c.fine_amount) = '' THEN 0
+  WHEN c.fine_amount ~ '万' THEN
+    COALESCE(NULLIF(regexp_replace(c.fine_amount, '[^0-9.]', '', 'g'), '')::double precision, 0) * 10000
+  WHEN c.fine_amount ~ '千' THEN
+    COALESCE(NULLIF(regexp_replace(c.fine_amount, '[^0-9.]', '', 'g'), '')::double precision, 0) * 1000
+  ELSE
+    COALESCE(NULLIF(regexp_replace(c.fine_amount, '[^0-9.]', '', 'g'), '')::double precision, 0)
+END
+"""
+
+SORTABLE_COLUMNS = {
+    "case_id": "c.case_id",
+    "party_name": "c.party_name",
+    "publish_date": "c.publish_date",
+    "overall_confidence": "c.overall_confidence",
+    "fine_amount": _FINE_AMOUNT_SORT_EXPR,
+    "regulator": "c.regulator",
+}
+
+CASE_LIST_SELECT = """
+        SELECT c.case_id, c.party_name, c.institution_type, c.penalty_doc_no,
+               c.violation_behavior, c.penalty_content, c.fine_amount, c.regulator,
+               c.publish_date, c.risk_tags, c.risk_type_ids, c.is_insurance_related,
+               c.overall_confidence, d.file_name AS source_file
+        FROM penalty_cases c JOIN documents d ON c.file_id = d.file_id
+"""
+
+
+def _serialize_cell(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, (list, tuple)):
+        return "、".join(str(v) for v in value)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _build_case_filters(
+    *,
+    risk_type: str | None,
+    regulator: str | None,
+    institution_type: str | None,
+    is_insurance_related: bool | None,
+    keyword: str | None,
+    date_from: date | None,
+    date_to: date | None,
+    case_ids: list[str] | None = None,
+) -> tuple[str, list]:
+    params: list = []
+    clauses: list[str] = []
+
+    if risk_type:
+        params.append(risk_type)
+        clauses.append(f"${len(params)} = ANY(c.risk_type_ids)")
+    if regulator:
+        params.append(regulator)
+        clauses.append(f"c.regulator ILIKE ${len(params)}")
+        params[-1] = f"%{regulator}%"
+    if institution_type:
+        params.append(institution_type)
+        clauses.append(f"c.institution_type = ${len(params)}")
+    if is_insurance_related is not None:
+        params.append(is_insurance_related)
+        clauses.append(f"c.is_insurance_related = ${len(params)}")
+    if keyword:
+        params.append(keyword)
+        clauses.append(
+            f"c.search_vector @@ plainto_tsquery('zhparser_config', ${len(params)})"
+        )
+    if date_from is not None:
+        params.append(date_from)
+        clauses.append(f"c.publish_date >= ${len(params)}")
+    if date_to is not None:
+        params.append(date_to)
+        clauses.append(f"c.publish_date <= ${len(params)}")
+    if case_ids:
+        params.append(case_ids)
+        clauses.append(f"c.case_id = ANY(${len(params)})")
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
 
 
 @router.get("/export/candidates")
@@ -45,6 +137,93 @@ async def export_extracted_endpoint(pool=Depends(get_pool)):
                         media_type="application/jsonl")
 
 
+@router.get("/export/table")
+async def export_cases_table(
+    format: str = Query("csv", pattern="^(csv|xlsx)$"),
+    risk_type: str | None = None,
+    regulator: str | None = None,
+    institution_type: str | None = None,
+    is_insurance_related: bool | None = None,
+    keyword: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    case_ids: str | None = Query(None, description="逗号分隔的 case_id 列表"),
+    sort_by: str = Query("publish_date"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$"),
+    pool=Depends(get_pool),
+):
+    """导出当前筛选条件下的案例为 CSV / Excel（支持勾选 case_ids）。"""
+    ids = [x.strip() for x in (case_ids or "").split(",") if x.strip()] or None
+    where, params = _build_case_filters(
+        risk_type=risk_type,
+        regulator=regulator,
+        institution_type=institution_type,
+        is_insurance_related=is_insurance_related,
+        keyword=keyword,
+        date_from=date_from,
+        date_to=date_to,
+        case_ids=ids,
+    )
+    sort_col = SORTABLE_COLUMNS.get(sort_by, SORTABLE_COLUMNS["publish_date"])
+    order = "DESC" if sort_order.lower() == "desc" else "ASC"
+    rows = await pool.fetch(
+        f"""
+        {CASE_LIST_SELECT}
+        {where}
+        ORDER BY {sort_col} {order} NULLS LAST, c.case_id ASC
+        LIMIT 10000
+        """,
+        *params,
+    )
+
+    headers = [
+        "case_id", "party_name", "penalty_doc_no", "violation_behavior",
+        "penalty_content", "fine_amount", "regulator", "publish_date",
+        "risk_tags", "risk_type_ids", "overall_confidence", "source_file",
+    ]
+    header_zh = [
+        "案例ID", "当事人", "文号", "违规行为", "处罚内容", "处罚金额",
+        "监管机构", "发布日期", "风险标签", "风险类型", "置信度", "来源文件",
+    ]
+
+    if format == "xlsx":
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise HTTPException(503, detail="pandas unavailable for xlsx export") from exc
+        records = [{h: _serialize_cell(r[h]) for h in headers} for r in rows]
+        df = pd.DataFrame(records)
+        df.columns = header_zh
+        buf = io.BytesIO()
+        try:
+            with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                df.to_excel(writer, index=False, sheet_name="处罚案例")
+        except ImportError:
+            # 无 openpyxl 时退化为带 BOM 的 CSV，Excel 可直接打开
+            format = "csv"
+        else:
+            buf.seek(0)
+            return StreamingResponse(
+                buf,
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": 'attachment; filename="penalty_cases.xlsx"'},
+            )
+
+    # CSV（UTF-8 BOM，Excel 友好）
+    text_buf = io.StringIO()
+    text_buf.write("\ufeff")
+    writer = csv.writer(text_buf)
+    writer.writerow(header_zh)
+    for r in rows:
+        writer.writerow([_serialize_cell(r[h]) for h in headers])
+    payload = io.BytesIO(text_buf.getvalue().encode("utf-8"))
+    return StreamingResponse(
+        payload,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="penalty_cases.csv"'},
+    )
+
+
 @router.get("/{case_id}")
 async def get_case(case_id: str, pool=Depends(get_pool)):
     row = await pool.fetchrow(
@@ -70,6 +249,10 @@ async def list_cases(
     institution_type: str | None = None,
     is_insurance_related: bool | None = None,
     keyword: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    sort_by: str = Query("publish_date"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     pool=Depends(get_pool),
 ):
     def _qint(name: str, default: int) -> int:
@@ -82,42 +265,28 @@ async def list_cases(
             raise HTTPException(422, detail=f"Invalid integer for {name}: {raw!r}") from exc
 
     page = max(1, _qint("page", 1))
-    page_size = max(1, _qint("page_size", 20))
-    params: list = []
-    clauses: list[str] = []
+    page_size = max(1, min(100, _qint("page_size", 20)))
+    where, params = _build_case_filters(
+        risk_type=risk_type,
+        regulator=regulator,
+        institution_type=institution_type,
+        is_insurance_related=is_insurance_related,
+        keyword=keyword,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
-    if risk_type:
-        params.append(risk_type)
-        clauses.append(f"${len(params)} = ANY(c.risk_type_ids)")
-    if regulator:
-        params.append(regulator)
-        clauses.append(f"c.regulator = ${len(params)}")
-    if institution_type:
-        params.append(institution_type)
-        clauses.append(f"c.institution_type = ${len(params)}")
-    if is_insurance_related is not None:
-        params.append(is_insurance_related)
-        clauses.append(f"c.is_insurance_related = ${len(params)}")
-    if keyword:
-        params.append(keyword)
-        clauses.append(
-            f"c.search_vector @@ plainto_tsquery('zhparser_config', ${len(params)})"
-        )
-
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     count_sql = f"SELECT COUNT(*) FROM penalty_cases c {where}"
     total = await pool.fetchval(count_sql, *params)
 
+    sort_col = SORTABLE_COLUMNS.get(sort_by, SORTABLE_COLUMNS["publish_date"])
+    order = "DESC" if sort_order.lower() == "desc" else "ASC"
     params.extend([page_size, (page - 1) * page_size])
     rows = await pool.fetch(
         f"""
-        SELECT c.case_id, c.party_name, c.institution_type, c.penalty_doc_no,
-               c.violation_behavior, c.penalty_content, c.regulator, c.publish_date,
-               c.risk_tags, c.risk_type_ids, c.is_insurance_related,
-               c.overall_confidence, d.file_name AS source_file
-        FROM penalty_cases c JOIN documents d ON c.file_id = d.file_id
+        {CASE_LIST_SELECT}
         {where}
-        ORDER BY c.case_id
+        ORDER BY {sort_col} {order} NULLS LAST, c.case_id ASC
         LIMIT ${len(params) - 1} OFFSET ${len(params)}
         """,
         *params,

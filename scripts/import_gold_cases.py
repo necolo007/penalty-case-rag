@@ -44,6 +44,16 @@ def resolve_comp_dir(explicit: str | None) -> Path:
     )
 
 
+def _gold_confidence(item: dict) -> float:
+    """金标质量高，但按字段完整度给 0.82–0.96，避免全部显示 100%。"""
+    fields = (
+        "party_name", "penalty_doc_no", "violation_behavior", "penalty_content",
+        "regulator", "publish_date", "legal_basis", "fine_amount",
+    )
+    filled = sum(1 for f in fields if str(item.get(f) or "").strip())
+    return round(0.82 + 0.14 * (filled / len(fields)), 3)
+
+
 def _default_raw_text_dir(comp_dir: Path) -> Path:
     settings = get_settings()
     if settings.COMP_RAW_TEXT_DIR:
@@ -153,7 +163,7 @@ async def import_cases(
                         ) VALUES (
                             $1, $2, $3, $4, $5, $6, $7, $8,
                             TRUE, TRUE, $9, $10, $11, $12,
-                            1.0, 'gold'
+                            $13, 'gold'
                         )
                         ON CONFLICT (case_id) DO UPDATE SET
                             file_id = EXCLUDED.file_id,
@@ -168,7 +178,7 @@ async def import_cases(
                             risk_tags = EXCLUDED.risk_tags,
                             risk_type_ids = EXCLUDED.risk_type_ids,
                             case_summary = EXCLUDED.case_summary,
-                            overall_confidence = 1.0,
+                            overall_confidence = EXCLUDED.overall_confidence,
                             extraction_method = 'gold',
                             updated_at = NOW()
                         """,
@@ -184,6 +194,7 @@ async def import_cases(
                         risk_tags,
                         risk_type_ids,
                         item.get("case_summary"),
+                        _gold_confidence(item),
                     )
 
                     # 主体关联：先清旧再插，保持幂等
