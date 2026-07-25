@@ -1,4 +1,4 @@
-"""手动触发数据库 AutoMigrate（通常不需要，API/Worker 启动时会自动执行）。
+"""手动触发数据库 AutoMigrate。
 
 用法：python scripts/setup_db.py
 """

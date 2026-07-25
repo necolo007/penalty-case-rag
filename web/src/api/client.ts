@@ -1,6 +1,7 @@
 import type {
   ApiErrorBody,
   CaseDetail,
+  CnRiskTag,
   DocumentItem,
   HealthResponse,
   MaterialReviewResponse,
@@ -77,6 +78,8 @@ export const api = {
   stats: () => request<StatsResponse>("/stats"),
 
   tags: () => request<RiskTag[]>("/tags"),
+
+  cnTags: () => request<CnRiskTag[]>("/tags/cn"),
 
   retrieve: (body: RetrieveRequest, format?: "submission") => {
     const qs = format ? `?format=${format}` : "";

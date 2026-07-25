@@ -13,6 +13,7 @@ import { CaseCard } from "../components/CaseCard";
 import { ConfidenceBar } from "../components/ConfidenceBar";
 import { RiskTypeChip } from "../components/RiskTypeChip";
 import { EmptyState, ErrorAlert, LoadingBlock } from "../components/ui";
+import { CN_TAG_NAMES } from "../lib/cnRiskTags";
 import { formatDate, truncate } from "../lib/format";
 
 type ViewMode = "table" | "card";
@@ -260,17 +261,23 @@ export function CasesPage() {
             />
           </div>
         </div>
-        <div className="w-full sm:w-40">
+        <div className="w-full sm:w-52">
           <label htmlFor="rt" className="mb-1 block text-xs font-semibold text-muted-fg">
-            风险类型
+            风险类型（27类）
           </label>
-          <input
+          <select
             id="rt"
             value={riskType}
             onChange={(e) => setRiskType(e.target.value)}
             className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
-            placeholder="R001"
-          />
+          >
+            <option value="">全部</option>
+            {CN_TAG_NAMES.map((tag) => (
+              <option key={tag} value={tag}>
+                {tag}
+              </option>
+            ))}
+          </select>
         </div>
         <div className="w-full sm:w-44">
           <label htmlFor="reg" className="mb-1 block text-xs font-semibold text-muted-fg">
@@ -378,9 +385,9 @@ export function CasesPage() {
                 <tbody>
                   {data.items.map((item) => {
                     const tags =
-                      item.risk_type_ids?.length
-                        ? item.risk_type_ids
-                        : item.risk_tags ?? [];
+                      item.risk_tags?.length
+                        ? item.risk_tags
+                        : item.risk_type_ids ?? [];
                     return (
                       <tr
                         key={item.case_id}

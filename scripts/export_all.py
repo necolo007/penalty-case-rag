@@ -1,4 +1,4 @@
-"""一键导出全部赛题交付物 jsonl / csv。
+"""一键导出赛题交付物。
 
 用法：python scripts/export_all.py [--out data/eval]
 """

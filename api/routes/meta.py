@@ -3,13 +3,14 @@
 from fastapi import APIRouter, Depends
 
 from api.dependencies import get_pool
+from engine.classification.competition_label_map import load_cn_tag_catalog
 
 router = APIRouter()
 
 
 @router.get("/tags")
 async def list_tags(pool=Depends(get_pool)):
-    """三级风险标签字典"""
+    """三级风险标签字典（含 R00x，内部召回用）"""
     rows = await pool.fetch(
         """
         SELECT risk_type_id, competition_id, parent_id, level, risk_type_name,
@@ -19,6 +20,12 @@ async def list_tags(pool=Depends(get_pool)):
         """
     )
     return [dict(r) for r in rows]
+
+
+@router.get("/tags/cn")
+async def list_cn_tags():
+    """配套 27 类中文风险标签（最终分类 / 提交用）"""
+    return load_cn_tag_catalog()
 
 
 @router.get("/dictionaries/synonyms")
@@ -51,6 +58,15 @@ async def get_stats(pool=Depends(get_pool)):
         GROUP BY 1 ORDER BY cnt DESC
         """
     )
+    cn_tag_distribution = await pool.fetch(
+        """
+        SELECT unnest(risk_tags) AS risk_tag, COUNT(*) AS cnt
+        FROM penalty_cases
+        WHERE is_insurance_related
+        GROUP BY 1 ORDER BY cnt DESC
+        LIMIT 40
+        """
+    )
     doc_status = await pool.fetch(
         "SELECT parse_status, COUNT(*) AS cnt FROM documents GROUP BY parse_status"
     )
@@ -60,6 +76,7 @@ async def get_stats(pool=Depends(get_pool)):
         "insurance_cases": insurance_cases,
         "embedded_cases": embedded_cases,
         "tag_distribution": {r["risk_type_id"]: r["cnt"] for r in tag_distribution},
+        "cn_tag_distribution": {r["risk_tag"]: r["cnt"] for r in cn_tag_distribution},
         "document_status": {r["parse_status"]: r["cnt"] for r in doc_status},
     }
 

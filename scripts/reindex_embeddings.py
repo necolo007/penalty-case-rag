@@ -1,11 +1,6 @@
-"""用 raw_text 增强案例向量：解决金标 violation_behavior 抽取残缺导致语义召回失败。
+"""用 raw_text 增强重建 case_embeddings。
 
-嵌入文本 = violation + penalty + tags + summary + raw_text 截断。
-切换/重建后与检索共用同一 embedding 模型。
-
-用法：
-  python scripts/reindex_embeddings.py
-  python scripts/reindex_embeddings.py --limit 50
+用法：python scripts/reindex_embeddings.py [--limit 50]
 """
 
 from __future__ import annotations
@@ -14,7 +9,6 @@ import argparse
 import asyncio
 import logging
 import re
-from pathlib import Path
 
 from core.config import get_settings
 from core.db import close_pool, create_pool, to_pgvector

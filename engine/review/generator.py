@@ -7,7 +7,11 @@ import json
 import logging
 import re
 
-from engine.classification.tag_mapper import COMPETITION_TAGS
+from engine.classification.competition_label_map import (
+    CANONICAL_CN_TAGS,
+    format_cn_tag_guide_for_prompt,
+    normalize_cn_tags,
+)
 from engine.llm.client import DeepSeekClient, ThinkingMode
 from engine.llm.prompts import REVIEW_PROMPT
 from engine.retrieval.base import SearchResult
@@ -48,7 +52,8 @@ class ReviewGenerator:
         prompt = REVIEW_PROMPT.format(
             query_text=query_text,
             case_context=self._build_case_context(retrieved_cases),
-            risk_type_list="、".join(COMPETITION_TAGS.values()),
+            risk_type_list="、".join(CANONICAL_CN_TAGS),
+            risk_tag_guide=format_cn_tag_guide_for_prompt(),
         )
         try:
             response = self.llm.complete(
@@ -64,6 +69,8 @@ class ReviewGenerator:
             result = self._fallback(retrieved_cases)
 
         result = self._enforce_traceability(result, retrieved_cases)
+        if result.get("risk_types"):
+            result["risk_types"] = normalize_cn_tags(list(result["risk_types"]))
         return result
 
     @staticmethod

@@ -79,8 +79,14 @@ def _build_case_filters(
     clauses: list[str] = []
 
     if risk_type:
-        params.append(risk_type)
-        clauses.append(f"${len(params)} = ANY(c.risk_type_ids)")
+        # 支持 27 类中文标签或 R00x；中文优先匹配 risk_tags
+        rt = risk_type.strip()
+        if rt.upper().startswith("R0") and len(rt) <= 5:
+            params.append(rt.upper())
+            clauses.append(f"${len(params)} = ANY(c.risk_type_ids)")
+        else:
+            params.append(rt)
+            clauses.append(f"${len(params)} = ANY(c.risk_tags)")
     if regulator:
         params.append(regulator)
         clauses.append(f"c.regulator ILIKE ${len(params)}")

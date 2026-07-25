@@ -1,11 +1,6 @@
-"""导入竞赛金标案例 gold_extraction_cases.jsonl → documents + penalty_cases + embeddings。
+"""导入竞赛金标 gold_extraction_cases.jsonl → documents + penalty_cases + embeddings。
 
-保留官方 case_id（C001–C500）与 file_id；关联赛题包 raw_text/{file_id}.txt。
-
-用法：
-  python scripts/import_gold_cases.py
-  python scripts/import_gold_cases.py --no-embed
-  python scripts/import_gold_cases.py --limit 50
+用法：python scripts/import_gold_cases.py [--no-embed] [--limit 50]
 """
 
 from __future__ import annotations

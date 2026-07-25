@@ -1,9 +1,17 @@
+from pathlib import Path
+
 from engine.classification.insurance_filter import InsuranceFilter
+
+DICT_DIR = Path(__file__).resolve().parents[1] / "data" / "dictionaries"
 
 
 def make_filter() -> InsuranceFilter:
     # 不存在的目录 → 使用内置默认词表
     return InsuranceFilter(dict_dir="nonexistent")
+
+
+def make_synced_filter() -> InsuranceFilter:
+    return InsuranceFilter(dict_dir=DICT_DIR)
 
 
 def test_insurance_company_detected():
@@ -36,3 +44,17 @@ def test_candidate_loose_threshold():
     assert candidate
     is_ins = f.score("张三", "退保后向投保人返还保费并赠送礼品", "").is_insurance
     assert not is_ins
+
+
+def test_brand_entity_from_synced_dict():
+    f = make_synced_filter()
+    s = f.score("中国平安人寿保险股份有限公司", "销售误导客户", "《保险法》")
+    assert s.is_insurance
+    assert any("中国平安" in r or "人寿保险" in r for r in s.reasons)
+
+
+def test_new_business_terms_hesitation_period():
+    f = make_synced_filter()
+    candidate, reasons = f.is_candidate("李四", "未告知犹豫期及退保损失", "")
+    assert candidate
+    assert any("犹豫期" in r for r in reasons)

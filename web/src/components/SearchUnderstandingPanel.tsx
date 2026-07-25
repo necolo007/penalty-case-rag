@@ -16,6 +16,7 @@ type Props = {
   active: boolean;
   query: string;
   predictedRiskIds: string[];
+  predictedCnTags?: string[];
   resultCount: number | null;
   topK: number;
   finished: boolean;
@@ -24,15 +25,18 @@ type Props = {
 function buildSteps(
   query: string,
   predictedRiskIds: string[],
+  predictedCnTags: string[],
   resultCount: number | null,
   topK: number,
 ): Step[] {
   const scene = inferBusinessScene(query);
   const keywords = extractRiskKeywords(query);
   const risks =
-    predictedRiskIds.length > 0
-      ? predictedRiskIds.slice(0, 3).map(riskLabel).join(" · ")
-      : "R001 销售误导 · R002 合同外利益";
+    predictedCnTags.length > 0
+      ? predictedCnTags.slice(0, 3).join(" · ")
+      : predictedRiskIds.length > 0
+        ? predictedRiskIds.slice(0, 3).map(riskLabel).join(" · ")
+        : "合同外利益 · 销售误导 · 承诺收益";
   const pool = resultCount != null ? `${resultCount} 条相关案例` : "检索候选池";
   const top = Math.min(topK, resultCount ?? topK);
 
@@ -43,7 +47,7 @@ function buildSteps(
       label: "提取风险关键词",
       detail: keywords.length ? keywords.join(" · ") : "语义特征抽取中",
     },
-    { id: "risk", label: "匹配风险类型", detail: risks },
+    { id: "risk", label: "匹配风险类型（27类）", detail: risks },
     { id: "pool", label: "检索历史案例", detail: pool },
     { id: "rank", label: "精排完成", detail: `Top ${top} 结果` },
   ];
@@ -53,11 +57,12 @@ export function SearchUnderstandingPanel({
   active,
   query,
   predictedRiskIds,
+  predictedCnTags = [],
   resultCount,
   topK,
   finished,
 }: Props) {
-  const steps = buildSteps(query, predictedRiskIds, resultCount, topK);
+  const steps = buildSteps(query, predictedRiskIds, predictedCnTags, resultCount, topK);
   const [visible, setVisible] = useState(0);
 
   useEffect(() => {

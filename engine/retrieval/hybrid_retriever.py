@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from engine.classification.competition_label_map import (
     cn_tags_to_competition_ids,
     predict_cn_tags_by_keywords,
+    resolve_final_cn_tags,
 )
 from engine.embedding.cache import CachedQueryEncoder
 from engine.retrieval.base import SearchQuery, SearchResult
@@ -75,7 +76,7 @@ class HybridRetriever:
             self.rewriter.rewrite(query.query_text),
             self.risk_predictor.predict(query.query_text),
         )
-        # 中文标签关键词增强（对齐配套 27 类）
+        # 中文标签关键词增强（对齐配套 27 类）；R00x 仅用于标签召回过滤
         predicted_cn_tags = predict_cn_tags_by_keywords(query.query_text)
         if predicted_cn_tags:
             for cid in cn_tags_to_competition_ids(predicted_cn_tags):
@@ -124,6 +125,16 @@ class HybridRetriever:
         # 6. 生成匹配理由
         for r in top:
             r.match_reason = build_match_reason(query.query_text, rewritten_query, r)
+
+        # 7. 用 Top 案例标签回填最终中文分类信号（仍保留 R00x 作内部召回）
+        case_tags = [t for r in top[:5] for t in (r.risk_tags or [])]
+        predicted_cn_tags = resolve_final_cn_tags(
+            query_text=query.query_text,
+            keyword_tags=predicted_cn_tags,
+            case_tags=case_tags,
+            competition_ids=predicted_risk_ids,
+            max_tags=5,
+        )
 
         took_ms = int((time.perf_counter() - started) * 1000)
         return RetrievalResponse(

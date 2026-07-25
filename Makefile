@@ -1,6 +1,6 @@
 .PHONY: install install-local-models db worker api test lint export \
 	docker-ocr-build docker-ocr-test docker-up docker-postgres-build docker-postgres-up \
-	link-data import-gold web-install web-dev web-build reindex-embed
+	link-data import-gold web-install web-dev web-build reindex-embed sync-dict
 
 # Windows / uv 环境下保证顶层包可导入
 export PYTHONPATH := .
@@ -47,6 +47,9 @@ import-gold: link-data
 
 reindex-embed:
 	python scripts/reindex_embeddings.py
+
+sync-dict:
+	python scripts/sync_dictionaries.py
 
 docker-up:
 	docker compose up -d postgres redis api worker

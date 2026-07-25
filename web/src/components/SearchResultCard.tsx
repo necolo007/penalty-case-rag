@@ -17,6 +17,7 @@ type Props = {
   userQuery: string;
   rewrittenQuery: string;
   predictedRiskIds: string[];
+  predictedCnTags?: string[];
   onSearchExpanded?: (query: string) => void;
 };
 
@@ -42,20 +43,21 @@ export function SearchResultCard({
   userQuery,
   rewrittenQuery,
   predictedRiskIds,
+  predictedCnTags = [],
   onSearchExpanded,
 }: Props) {
   const [scoreOpen, setScoreOpen] = useState(false);
   const [queryOpen, setQueryOpen] = useState(false);
 
-  const breakdown = deriveScoreBreakdown(item, predictedRiskIds);
+  const breakdown = deriveScoreBreakdown(item, predictedRiskIds, predictedCnTags);
   const riskLevel = riskLevelFromScore(item.score);
   const match = parseMatchReason(item.match_reason, userQuery);
   const riskTypes = [
     ...new Set([
-      ...predictedRiskIds.map(riskLabel),
-      ...item.risk_tags.slice(0, 2),
+      ...(predictedCnTags.length ? predictedCnTags : predictedRiskIds.map(riskLabel)),
+      ...item.risk_tags.slice(0, 3),
     ]),
-  ].slice(0, 3);
+  ].slice(0, 4);
 
   const evidence =
     truncate(item.penalty_content || item.violation_behavior, 180) ||

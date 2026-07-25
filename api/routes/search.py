@@ -15,13 +15,11 @@ from api.schemas.models import (
     SubmissionResponse,
 )
 from core.config import get_settings
-from core.config import get_settings
 from engine.classification.competition_label_map import (
-    competition_ids_to_cn_tags,
     format_submission_risk_type,
-    predict_cn_tags_by_keywords,
+    normalize_cn_tags,
+    resolve_final_cn_tags,
 )
-from engine.classification.tag_mapper import competition_name
 from engine.retrieval.base import SearchQuery
 
 logger = logging.getLogger(__name__)
@@ -43,18 +41,23 @@ def _to_search_query(req: RetrieveRequest) -> SearchQuery:
     )
 
 
+def _finalize_cn_tags(req: RetrieveRequest, retrieval, llm_risk_names: list[str] | None = None) -> list[str]:
+    """最终对外分类：27 类中文标签；R00x 仅兜底。"""
+    case_tags = [t for r in retrieval.results[:5] for t in (r.risk_tags or [])]
+    return resolve_final_cn_tags(
+        query_text=req.query_text,
+        keyword_tags=getattr(retrieval, "predicted_cn_tags", None),
+        case_tags=case_tags,
+        llm_tags=llm_risk_names,
+        competition_ids=retrieval.predicted_risk_ids,
+        max_tags=5,
+    )
+
+
 async def _build_submission(req: RetrieveRequest, retriever, generator,
                             risk_predictor) -> SubmissionResponse:
     """改写 → 四路检索 → 多风险类型判断 → 审查建议生成，输出 submission schema"""
     retrieval = await retriever.retrieve(_to_search_query(req))
-
-    # 中文标签：规则关键词 + Top 案例标签并集
-    cn_tags = list(dict.fromkeys([
-        *predict_cn_tags_by_keywords(req.query_text),
-        *[t for r in retrieval.results[:3] for t in (r.risk_tags or [])],
-    ]))[:5]
-    if not cn_tags:
-        cn_tags = competition_ids_to_cn_tags(retrieval.predicted_risk_ids)
 
     suggestion = ""
     reasons = {r.case_id: r.match_reason for r in retrieval.results}
@@ -63,22 +66,18 @@ async def _build_submission(req: RetrieveRequest, retriever, generator,
     if generator is not None and retrieval.results:
         review = generator.generate(req.query_text, retrieval.results)
         if review.get("risk_types"):
-            llm_risk_names = list(review["risk_types"])
-            for name in llm_risk_names:
-                if name and not str(name).startswith("R0") and name not in cn_tags:
-                    cn_tags.append(name)
+            llm_risk_names = normalize_cn_tags(list(review["risk_types"]))
         suggestion = review.get("suggestion", "")
         for a in review.get("case_analysis", []):
             if a.get("case_id") and a.get("similarity_reason"):
                 reasons[a["case_id"]] = a["similarity_reason"]
 
-    if get_settings().SUBMISSION_RISK_STYLE == "competition":
-        names = llm_risk_names or [competition_name(rid) for rid in retrieval.predicted_risk_ids]
-        risk_type = "；".join(dict.fromkeys(names))
-    else:
-        risk_type = format_submission_risk_type(
-            cn_tags=cn_tags, competition_ids=retrieval.predicted_risk_ids,
-        )
+    cn_tags = _finalize_cn_tags(req, retrieval, llm_risk_names)
+    # 始终以 27 类中文标签提交；competition 风格仅影响是否允许 LLM 长描述，最终仍归一化
+    risk_type = format_submission_risk_type(
+        cn_tags=cn_tags,
+        competition_ids=retrieval.predicted_risk_ids,
+    )
 
     return SubmissionResponse(
         question_id=req.question_id,
@@ -105,10 +104,12 @@ async def retrieve_similar_cases(
         return await _build_submission(req, retriever, generator, risk_predictor)
 
     retrieval = await retriever.retrieve(_to_search_query(req))
+    cn_tags = _finalize_cn_tags(req, retrieval)
     return RetrieveResponse(
         query=retrieval.query,
         rewritten_query=retrieval.rewritten_query,
         predicted_risk_ids=retrieval.predicted_risk_ids,
+        predicted_cn_tags=cn_tags,
         results=[
             CaseResult(
                 rank=i + 1,

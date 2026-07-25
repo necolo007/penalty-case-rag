@@ -11,7 +11,7 @@ class RetrieveRequest(BaseModel):
     query_text: str = Field(..., min_length=1, max_length=2000)
     question_id: Optional[str] = None
     scene: Optional[str] = None
-    risk_type: Optional[str] = None            # R001–R008
+    risk_type: Optional[str] = None            # 中文标签或 R001–R008
     regulator: Optional[str] = None
     institution_type: Optional[str] = None
     date_from: Optional[str] = None
@@ -38,7 +38,14 @@ class CaseResult(BaseModel):
 class RetrieveResponse(BaseModel):
     query: str
     rewritten_query: str
-    predicted_risk_ids: list[str]
+    predicted_risk_ids: list[str] = Field(
+        default_factory=list,
+        description="内部召回用 R001–R008",
+    )
+    predicted_cn_tags: list[str] = Field(
+        default_factory=list,
+        description="最终分类用 27 类中文标签",
+    )
     results: list[CaseResult]
     channel_stats: dict[str, int]
     took_ms: int
@@ -51,9 +58,9 @@ class SubmissionCase(BaseModel):
 
 
 class SubmissionResponse(BaseModel):
-    """严格对齐 submission.jsonl schema"""
+    """严格对齐 submission.jsonl schema；risk_type 为 27 类中文标签分号拼接"""
     question_id: Optional[str]
-    risk_type: str                              # 多类型中文分号拼接
+    risk_type: str
     retrieved_cases: list[SubmissionCase]
     suggestion: str
 

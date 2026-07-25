@@ -87,7 +87,7 @@ export function OverviewPage() {
   }, [stats]);
 
   const topTags = stats
-    ? Object.entries(stats.tag_distribution)
+    ? Object.entries(stats.cn_tag_distribution ?? stats.tag_distribution)
         .sort((a, b) => b[1] - a[1])
         .slice(0, 8)
     : [];

@@ -32,6 +32,8 @@ export interface RetrieveResponse {
   query: string;
   rewritten_query: string;
   predicted_risk_ids: string[];
+  /** 最终分类：27 类中文标签 */
+  predicted_cn_tags?: string[];
   results: CaseResult[];
   channel_stats: Record<string, number>;
   took_ms: number;
@@ -125,7 +127,15 @@ export interface StatsResponse {
   insurance_cases: number;
   embedded_cases: number;
   tag_distribution: Record<string, number>;
+  cn_tag_distribution?: Record<string, number>;
   document_status: Record<string, number>;
+}
+
+export interface CnRiskTag {
+  risk_tag: string;
+  description: string;
+  category: string;
+  competition_id?: string;
 }
 
 export interface HealthResponse {

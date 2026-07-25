@@ -1,13 +1,15 @@
-"""风险标签归类：规则优先（关键词命中三级标签）+ LLM 补全长尾。
-
-输出内部三级标签 ID + 赛题扁平 ID + 展示标签，三轨同时写入 penalty_cases。
-"""
+"""风险标签归类：三级词典规则 + 27 类中文词典增强 + LLM 兜底。"""
 
 import json
 import logging
 
 import asyncpg
 
+from engine.classification.competition_label_map import (
+    cn_tags_to_competition_ids,
+    normalize_cn_tags,
+    predict_cn_tags_by_keywords,
+)
 from engine.classification.tag_mapper import map_internal_to_competition
 from engine.llm.client import DeepSeekClient, ThinkingMode
 from engine.llm.prompts import RISK_TAG_PROMPT
@@ -27,14 +29,13 @@ class RiskTagger:
                 """
                 SELECT risk_type_id, competition_id, risk_type_name, display_tags, keywords, level
                 FROM risk_type_dict WHERE is_active
-                ORDER BY level DESC   -- 三级优先匹配，粒度更细
+                ORDER BY level DESC
                 """
             )
             self._dict_cache = [dict(r) for r in rows]
         return self._dict_cache
 
     async def classify(self, violation_behavior: str) -> dict:
-        """返回 {internal_ids, competition_ids, display_tags, method}"""
         entries = await self._load_dict()
 
         internal_ids: list[str] = []
@@ -55,14 +56,20 @@ class RiskTagger:
                 if iid in id_map:
                     display_tags.extend(id_map[iid]["display_tags"] or [])
 
+        cn_tags = predict_cn_tags_by_keywords(violation_behavior)
+        display_tags = normalize_cn_tags(list(display_tags) + cn_tags)
+        if cn_tags and method == "rule":
+            method = "rule+cn_dict"
+
         internal_ids = list(dict.fromkeys(internal_ids))[:5]
         competition_ids = list(dict.fromkeys(
-            cid for cid in (map_internal_to_competition(i) for i in internal_ids) if cid
+            [cid for cid in (map_internal_to_competition(i) for i in internal_ids) if cid]
+            + cn_tags_to_competition_ids(display_tags)
         ))
         return {
             "internal_ids": internal_ids,
             "competition_ids": competition_ids,
-            "display_tags": list(dict.fromkeys(display_tags))[:5],
+            "display_tags": display_tags[:5],
             "method": method,
         }
 

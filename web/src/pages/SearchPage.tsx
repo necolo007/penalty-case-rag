@@ -436,6 +436,7 @@ export function SearchPage() {
           finished={understandingDone}
           query={query}
           predictedRiskIds={data?.predicted_risk_ids ?? []}
+          predictedCnTags={data?.predicted_cn_tags ?? []}
           resultCount={pendingCount}
           topK={topK}
         />
@@ -443,17 +444,34 @@ export function SearchPage() {
 
       {data ? (
         <section className="space-y-5">
-          {data.predicted_risk_ids.length > 0 || Object.keys(data.channel_stats).length > 0 ? (
-            <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-border/70 bg-white/80 px-4 py-3 text-xs">
-              <span className="font-semibold text-muted-fg">系统预判风险</span>
-              {data.predicted_risk_ids.map((id) => (
-                <TagChip key={id}>{id}</TagChip>
-              ))}
-              {Object.entries(data.channel_stats).map(([ch, n]) => (
-                <span key={ch} className="rounded-md bg-muted px-2 py-0.5 text-muted-fg">
-                  {ch}: {n}
-                </span>
-              ))}
+          {(data.predicted_cn_tags?.length || data.predicted_risk_ids.length > 0 || Object.keys(data.channel_stats).length > 0) ? (
+            <div className="space-y-2 rounded-2xl border border-border/70 bg-white/80 px-4 py-3 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold text-muted-fg">预判风险（27类）</span>
+                {(data.predicted_cn_tags?.length ? data.predicted_cn_tags : []).map((tag) => (
+                  <TagChip key={tag}>{tag}</TagChip>
+                ))}
+                {!data.predicted_cn_tags?.length ? (
+                  <span className="text-muted-fg">暂无细粒度标签，已用内部大类召回</span>
+                ) : null}
+              </div>
+              {data.predicted_risk_ids.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-2 text-muted-fg">
+                  <span className="font-medium">内部召回大类</span>
+                  {data.predicted_risk_ids.map((id) => (
+                    <span key={id} className="rounded-md bg-muted px-2 py-0.5 font-mono">
+                      {id}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(data.channel_stats).map(([ch, n]) => (
+                  <span key={ch} className="rounded-md bg-muted px-2 py-0.5 text-muted-fg">
+                    {ch}: {n}
+                  </span>
+                ))}
+              </div>
             </div>
           ) : null}
 
@@ -471,6 +489,7 @@ export function SearchPage() {
                   userQuery={data.query}
                   rewrittenQuery={data.rewritten_query}
                   predictedRiskIds={data.predicted_risk_ids}
+                  predictedCnTags={data.predicted_cn_tags ?? []}
                   onSearchExpanded={(q) => void runSearch(q)}
                 />
               ))}

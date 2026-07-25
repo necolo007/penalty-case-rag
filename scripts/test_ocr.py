@@ -1,8 +1,6 @@
 """OCR 冒烟测试（仅在 OCR Worker 容器内执行）。
 
-用法：
-  docker compose run --rm worker python scripts/test_ocr.py
-  docker compose run --rm worker python scripts/test_ocr.py /app/uploads/scan_sample.pdf
+用法：docker compose run --rm worker python scripts/test_ocr.py [/app/uploads/x.pdf]
 """
 
 from __future__ import annotations
@@ -14,7 +12,6 @@ from pathlib import Path
 def _check_imports() -> None:
     try:
         from rapidocr_onnxruntime import RapidOCR  # noqa: F401
-
         print("[OK] rapidocr_onnxruntime imported")
     except ImportError:
         print("[MISS] rapidocr_onnxruntime — run inside Docker OCR Worker")
@@ -22,7 +19,6 @@ def _check_imports() -> None:
 
     try:
         import fitz
-
         print(f"[OK] pymupdf imported ({getattr(fitz, 'version', ('?',))[0]})")
     except ImportError:
         print("[MISS] pymupdf")

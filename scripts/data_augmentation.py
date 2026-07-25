@@ -1,11 +1,6 @@
-"""样本增强（任务5）：从处罚案例反向生成业务口语 query，构建 query-case 训练对。
+"""从处罚案例反向生成营销口语 query，构建检索训练对。
 
-策略：
-  同义改写：法言法语 → 多个业务口语版本（LLM）
-  反向生成：违法行为 → 营销话术风格 query
-  难负样本：同 risk_type 不同细节的案例（供精排训练）
-
-用法：python scripts/data_augmentation.py --limit 100 --output data/eval/retrieval_train_queries.jsonl
+用法：python scripts/data_augmentation.py --limit 100
 """
 
 import argparse
@@ -45,7 +40,6 @@ async def main():
 
     llm = create_llm_client(settings)
     pool = await create_pool()
-
     rows = await pool.fetch(
         """
         SELECT case_id, violation_behavior, risk_type_ids
@@ -67,7 +61,7 @@ async def main():
                 resp = llm.complete(
                     REVERSE_GEN_PROMPT.format(violation_behavior=row["violation_behavior"][:300]),
                     max_tokens=200,
-                    temperature=0.7,   # 生成任务需要多样性
+                    temperature=0.7,
                     thinking=ThinkingMode.DISABLED,
                 )
             except Exception as e:  # noqa: BLE001

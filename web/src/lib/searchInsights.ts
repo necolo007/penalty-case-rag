@@ -1,4 +1,5 @@
 import type { CaseResult } from "../api/types";
+import { CN_RISK_TAGS } from "./cnRiskTags";
 import { RISK_ATLAS } from "./riskAtlas";
 
 const SCENE_HINTS: Array<{ pattern: RegExp; label: string }> = [
@@ -44,6 +45,8 @@ export function extractRiskKeywords(query: string, max = 4): string[] {
 }
 
 export function riskLabel(id: string): string {
+  const cn = CN_RISK_TAGS.find((t) => t.risk_tag === id);
+  if (cn) return cn.risk_tag;
   const meta = RISK_ATLAS.find((r) => r.id === id);
   return meta ? `${id} ${meta.name}` : id;
 }
@@ -81,6 +84,7 @@ export type ScoreBreakdown = {
 export function deriveScoreBreakdown(
   item: CaseResult,
   predictedRiskIds: string[],
+  predictedCnTags: string[] = [],
 ): ScoreBreakdown {
   const base = Math.min(99.9, Math.max(0, item.score * 100));
   const hasVector = item.channels.includes("vector");
@@ -88,10 +92,14 @@ export function deriveScoreBreakdown(
   const hasBm25 = item.channels.includes("bm25");
   const hasRule = item.channels.includes("rule");
   const tagOverlap =
-    predictedRiskIds.length > 0 &&
-    item.risk_tags.some((t) =>
-      predictedRiskIds.some((id) => t.includes(id) || t.includes(RISK_ATLAS.find((r) => r.id === id)?.name ?? "")),
-    );
+    (predictedCnTags.length > 0 &&
+      item.risk_tags.some((t) => predictedCnTags.includes(t))) ||
+    (predictedRiskIds.length > 0 &&
+      item.risk_tags.some((t) =>
+        predictedRiskIds.some(
+          (id) => t.includes(id) || t.includes(RISK_ATLAS.find((r) => r.id === id)?.name ?? ""),
+        ),
+      ));
 
   const semantic = hasVector ? clampPct(base + 1.2) : clampPct(base * 0.92);
   const tagMatch = hasTag || tagOverlap ? clampPct(Math.max(base, 96)) : clampPct(base * 0.78);

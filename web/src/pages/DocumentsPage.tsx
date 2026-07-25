@@ -83,9 +83,9 @@ function ExtractedFields({ cases }: { cases: ExtractedCaseSummary[] }) {
               );
             })}
           </dl>
-          {(c.risk_type_ids?.length || c.risk_tags?.length) ? (
+          {(c.risk_tags?.length || c.risk_type_ids?.length) ? (
             <div className="mt-3 flex flex-wrap gap-1.5">
-              {(c.risk_type_ids?.length ? c.risk_type_ids : c.risk_tags ?? []).map((t) => (
+              {(c.risk_tags?.length ? c.risk_tags : c.risk_type_ids ?? []).map((t) => (
                 <RiskTypeChip key={t} idOrTag={t} />
               ))}
             </div>

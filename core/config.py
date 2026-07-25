@@ -49,12 +49,10 @@ class Settings(BaseSettings):
     DATA_DIR: str = "./data"
     MAX_UPLOAD_SIZE_MB: int = 50
 
-    # ---- 竞赛配套数据（可选，避免整仓复制万级 PDF） ----
-    # 指向 docs/data/05-.../配套数据；raw_text 默认取配套目录上一级的 raw_text/
     COMP_DATA_DIR: str = ""
     COMP_RAW_TEXT_DIR: str = ""
-    # submission.risk_type 输出风格：cn=中文标签（默认，对齐配套数据）| competition=R00x 长描述
-    SUBMISSION_RISK_STYLE: str = "cn"
+    EXAMPLE_CORPUS_DIR: str = ""
+    SUBMISSION_RISK_STYLE: str = "cn"  # cn=中文标签；competition=R00x
 
 
 @lru_cache
