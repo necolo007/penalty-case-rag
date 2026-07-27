@@ -12,9 +12,18 @@ logger = logging.getLogger(__name__)
 
 
 class Reranker:
-    def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3", device: str = "cpu"):
+    def __init__(
+        self,
+        model_name: str = "BAAI/bge-reranker-v2-m3",
+        device: str = "cpu",
+        *,
+        batch_size: int = 16,
+        doc_max_chars: int = 1200,
+    ):
         self.model_name = model_name
         self.device = device
+        self.batch_size = batch_size
+        self.doc_max_chars = doc_max_chars
         self._model = None
 
     def _get_model(self):
@@ -42,13 +51,14 @@ class Reranker:
 
     def _score_pairs(self, pairs: list[list[str]]) -> list[float]:
         # batch_size 控制 CPU 峰值；normalize 便于与 RRF 分数语义区分
-        scores = self._get_model().compute_score(pairs, normalize=True, batch_size=16)
+        scores = self._get_model().compute_score(
+            pairs, normalize=True, batch_size=self.batch_size,
+        )
         if isinstance(scores, float):
             return [scores]
         return list(scores)
 
-    @staticmethod
-    def _case_text(result: SearchResult) -> str:
+    def _case_text(self, result: SearchResult) -> str:
         parts = [
             result.party_name,
             result.violation_behavior,
@@ -56,7 +66,7 @@ class Reranker:
             " ".join(result.risk_tags or []),
         ]
         text = " ".join(p for p in parts if p)
-        return text[:1200]
+        return text[: self.doc_max_chars]
 
     async def rerank(self, query_text: str, candidates: list[SearchResult],
                      top_k: int = 10) -> list[SearchResult]:

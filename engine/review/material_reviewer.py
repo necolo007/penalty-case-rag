@@ -49,7 +49,28 @@ class MaterialReviewReport:
     scene: str | None = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        """同时输出后端内部字段与前端兼容字段（risk_sentences / summary）。"""
+        payload = asdict(self)
+        payload["summary"] = self.overall_suggestion
+        payload["risk_sentences"] = [
+            {
+                "text": sr.sentence_text,
+                "risk_level": sr.severity,
+                "suggestion": sr.suggestion,
+                "position_start": sr.position_start,
+                "position_end": sr.position_end,
+                "paragraph_idx": sr.paragraph_idx,
+                "risk_types": sr.risk_types,
+                "risk_type_ids": sr.risk_type_ids,
+                "compliance_reason": sr.compliance_reason,
+                "confidence": sr.confidence,
+                "detection_method": sr.detection_method,
+                "detection_reasons": sr.detection_reasons,
+                "retrieved_cases": sr.retrieved_cases,
+            }
+            for sr in self.sentence_reviews
+        ]
+        return payload
 
 
 class MaterialReviewer:

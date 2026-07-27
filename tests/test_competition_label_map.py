@@ -17,6 +17,24 @@ def test_cn_tags_map_to_r_codes():
     assert cn_tags_to_competition_ids(["虚列费用套取资金"]) == ["R005"]
 
 
+def test_near_synonym_aliases():
+    assert "隐瞒重要信息" in normalize_cn_tags(["隐藏重要信息"])
+    assert "虚假宣传" in normalize_cn_tags(["夸大宣传"])
+    assert "诱导投保" in normalize_cn_tags(["引诱投保"])
+    assert "销售误导" in normalize_cn_tags(["误导"])
+    tags = normalize_cn_tags(["夸大服务"])
+    assert "夸大收益" in tags or "虚假宣传" in tags
+
+
+def test_unknown_label_needs_review():
+    from engine.classification.competition_label_map import normalize_cn_tags_detailed
+
+    detailed = normalize_cn_tags_detailed(["完全不存在的标签XYZ"])
+    assert detailed[0]["status"] == "needs_review"
+    assert detailed[0]["normalized_label"] is None
+    assert detailed[0]["raw_label"] == "完全不存在的标签XYZ"
+
+
 def test_compliance_tags_not_forced_to_r006():
     """费率条款 / 客户信息不实 ≠ 编制虚假财务资料(R006)。"""
     assert cn_tags_to_competition_ids(["未按规定使用费率条款"]) == []

@@ -20,6 +20,7 @@ def reciprocal_rank_fusion(
     k: int = 60,
     top_k: int = 50,
     weights: dict[str, float] | None = None,
+    multi_channel_bonus: float = 0.08,
 ) -> list[SearchResult]:
     """融合多路召回结果，保留各通道命中记录用于生成匹配理由。"""
     weights = weights or DEFAULT_CHANNEL_WEIGHTS
@@ -39,11 +40,11 @@ def reciprocal_rank_fusion(
             else:
                 case_map[result.case_id] = result
 
-    # 多通道共识加成
+    # 多通道共识加成（系数可经 Settings.RRF_MULTI_CHANNEL_BONUS 覆盖）
     for case_id, result in case_map.items():
         n_ch = len(result.channels or [])
-        if n_ch >= 2:
-            scores[case_id] = scores.get(case_id, 0.0) + 0.08 * (n_ch - 1)
+        if n_ch >= 2 and multi_channel_bonus:
+            scores[case_id] = scores.get(case_id, 0.0) + multi_channel_bonus * (n_ch - 1)
 
     sorted_ids = sorted(scores, key=lambda cid: scores[cid], reverse=True)[:top_k]
 

@@ -20,7 +20,7 @@ from engine.embedding.cache import CachedQueryEncoder
 from engine.retrieval.base import SearchQuery, SearchResult
 from engine.retrieval.bm25_retriever import BM25Retriever
 from engine.retrieval.match_reason import build_match_reason
-from engine.retrieval.merger import reciprocal_rank_fusion
+from engine.retrieval.merger import DEFAULT_CHANNEL_WEIGHTS, reciprocal_rank_fusion
 from engine.retrieval.query_rewriter import QueryRewriter
 from engine.retrieval.reranker import Reranker
 from engine.retrieval.risk_predictor import RiskPredictor
@@ -55,7 +55,15 @@ class HybridRetriever:
         query_encoder: CachedQueryEncoder,
         reranker: Reranker,
         fusion_size: int = 100,
-        rerank_candidates: int = 20,
+        rerank_candidates: int = 40,
+        channel_weights: dict[str, float] | None = None,
+        rrf_k: int = 60,
+        multi_channel_bonus: float = 0.08,
+        cn_tag_predict_max: int = 3,
+        cn_tag_final_max: int = 5,
+        cn_tag_bm25_append: int = 2,
+        risk_id_cap: int = 3,
+        tag_backfill_top_cases: int = 5,
     ):
         self.bm25 = bm25
         self.vector = vector
@@ -67,6 +75,14 @@ class HybridRetriever:
         self.reranker = reranker
         self.fusion_size = fusion_size
         self.rerank_candidates = rerank_candidates
+        self.channel_weights = channel_weights or dict(DEFAULT_CHANNEL_WEIGHTS)
+        self.rrf_k = rrf_k
+        self.multi_channel_bonus = multi_channel_bonus
+        self.cn_tag_predict_max = cn_tag_predict_max
+        self.cn_tag_final_max = cn_tag_final_max
+        self.cn_tag_bm25_append = cn_tag_bm25_append
+        self.risk_id_cap = risk_id_cap
+        self.tag_backfill_top_cases = tag_backfill_top_cases
 
     async def retrieve(self, query: SearchQuery) -> RetrievalResponse:
         started = time.perf_counter()
@@ -77,17 +93,19 @@ class HybridRetriever:
             self.risk_predictor.predict(query.query_text),
         )
         # 中文标签：控制数量，避免标签/BM25 通道被噪声淹没
-        predicted_cn_tags = predict_cn_tags_by_keywords(query.query_text, max_tags=3)
+        predicted_cn_tags = predict_cn_tags_by_keywords(
+            query.query_text, max_tags=self.cn_tag_predict_max,
+        )
         if predicted_cn_tags:
             for cid in cn_tags_to_competition_ids(predicted_cn_tags):
                 if cid not in predicted_risk_ids:
                     predicted_risk_ids.append(cid)
-        predicted_risk_ids = list(dict.fromkeys(predicted_risk_ids))[:3]
+        predicted_risk_ids = list(dict.fromkeys(predicted_risk_ids))[: self.risk_id_cap]
 
-        # BM25：改写文本 + 至多 2 个中文标签（口语词→标签词桥接）
+        # BM25：改写文本 + 少量中文标签（口语词→标签词桥接）
         bm25_text = rewritten_query
-        if predicted_cn_tags:
-            bm25_text = f"{rewritten_query} {' '.join(predicted_cn_tags[:2])}"
+        if predicted_cn_tags and self.cn_tag_bm25_append > 0:
+            bm25_text = f"{rewritten_query} {' '.join(predicted_cn_tags[: self.cn_tag_bm25_append])}"
 
         # 2. 改写文本向量化（instruct 非对称编码 + Redis 缓存）
         query_embedding = await self.query_encoder.encode_query(rewritten_query)
@@ -114,7 +132,13 @@ class HybridRetriever:
                 channel_results[channel] = output
 
         # 4. RRF 融合
-        fused = reciprocal_rank_fusion(channel_results, top_k=self.fusion_size)
+        fused = reciprocal_rank_fusion(
+            channel_results,
+            k=self.rrf_k,
+            top_k=self.fusion_size,
+            weights=self.channel_weights,
+            multi_channel_bonus=self.multi_channel_bonus,
+        )
 
         # 5. 精排：用原始口语 query（比法言法语改写更贴近营销话术）
         if query.use_reranker:
@@ -128,13 +152,15 @@ class HybridRetriever:
             r.match_reason = build_match_reason(query.query_text, rewritten_query, r)
 
         # 7. 用 Top 案例标签回填最终中文分类信号（仍保留 R00x 作内部召回）
-        case_tags = [t for r in top[:5] for t in (r.risk_tags or [])]
+        case_tags = [
+            t for r in top[: self.tag_backfill_top_cases] for t in (r.risk_tags or [])
+        ]
         predicted_cn_tags = resolve_final_cn_tags(
             query_text=query.query_text,
             keyword_tags=predicted_cn_tags,
             case_tags=case_tags,
             competition_ids=predicted_risk_ids,
-            max_tags=5,
+            max_tags=self.cn_tag_final_max,
         )
 
         took_ms = int((time.perf_counter() - started) * 1000)

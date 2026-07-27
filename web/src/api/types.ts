@@ -178,14 +178,29 @@ export interface ReviewGenerateResponse {
 export interface MaterialReviewResponse {
   material_id?: string;
   overall_risk?: string;
+  /** 后端 overall_suggestion 的前端别名 */
   summary?: string;
+  overall_suggestion?: string;
+  /** 后端 sentence_reviews 的前端别名（已在 to_dict 中映射） */
   risk_sentences?: Array<{
     text?: string;
     risk_level?: string;
     suggestion?: string;
+    risk_types?: string[];
+    compliance_reason?: string;
+    confidence?: number;
     [key: string]: unknown;
   }>;
+  sentence_reviews?: Array<Record<string, unknown>>;
   [key: string]: unknown;
+}
+
+export type FeedbackVerdict = "agree" | "disagree" | "partial";
+
+export interface FeedbackRequest {
+  feedback: FeedbackVerdict;
+  feedback_note?: string;
+  reviewer?: string;
 }
 
 export interface ApiErrorBody {

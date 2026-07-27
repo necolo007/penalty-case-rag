@@ -109,9 +109,17 @@ CN_TAG_ALIASES: dict[str, list[str]] = {
     "销售违规": ["销售误导"],
     "消费者权益保护": ["其他"],
     "误导": ["销售误导"],
+    # 训练集近义/错写（P0-4）
+    "夸大服务": ["夸大收益", "虚假宣传"],
+    "隐藏重要信息": ["隐瞒重要信息"],
+    "错误解释保险责任": ["销售误导", "欺骗投保人"],
+    "夸大宣传": ["虚假宣传"],
+    "引诱投保": ["诱导投保"],
+    "诱导购买": ["诱导投保"],
+    "隐瞒信息": ["隐瞒重要信息"],
 }
 
-CN_TAG_KEYWORDS: dict[str, list[str]] = {
+_BUILTIN_CN_TAG_KEYWORDS: dict[str, list[str]] = {
     "合同外利益": [
         "合同约定以外", "合同外利益", "赠送体检卡", "赠送加油卡", "赠送洗车券",
         "体检卡", "加油卡", "洗车券", "代金券", "油卡",
@@ -128,9 +136,12 @@ CN_TAG_KEYWORDS: dict[str, list[str]] = {
     "欺骗投保人": ["欺骗投保人", "虚假告知"],
     "夸大收益": [
         "夸大收益", "最高收益", "稳赚", "年化收益", "翻好几倍",
-        "收益翻倍", "比存银行",
+        "收益翻倍", "比存银行", r"夸大.{0,8}收益", r"夸大.{0,8}(?:保单|产品|服务)",
     ],
-    "承诺收益": ["承诺收益", "保本保息", "保证回报", "一定赚钱", "买了肯定不亏"],
+    "承诺收益": [
+        "承诺收益", "保本保息", "保证回报", "一定赚钱", "买了肯定不亏",
+        r"承诺.{0,10}收益", r"承诺(?:给予|保证).{0,10}(?:利益|回报)",
+    ],
     "保证收益": ["保证收益", "保证收益率", "稳赚不赔", "保证年化"],
     "弱化风险提示": [
         "不用担心", "无风险", "零风险", "弱化风险", "完全无风险",
@@ -141,13 +152,22 @@ CN_TAG_KEYWORDS: dict[str, list[str]] = {
     "绝对化表述": ["行业领先", "全国第一", "独一无二"],
     "虚假宣传": ["虚假宣传", "夸大宣传", "未经.*备案的宣传"],
     "产品说明会违规": ["产品说明会", "产说会"],
-    "培训材料违规": ["培训材料", "培训话术", "培训PPT"],
+    "培训材料违规": [
+        "培训材料", "培训话术", "培训PPT", "培训课件", "培训班", r"培训.{0,10}课件",
+    ],
     "电销违规": ["电销", "电话销售"],
-    "不当比较": ["不当对比", "比存款", "比理财更安全"],
+    "不当比较": [
+        "不当对比", "不当类比", "比存款", "比理财更安全", "片面比较",
+        r"(?:收益|利益|分红).{0,15}(?:存款|银行|证券|理财).{0,10}(?:比较|类比)",
+        r"(?:存款|银行).{0,15}(?:比较|类比)",
+    ],
     "贬低竞品": ["贬低竞品", "诋毁同业", "同业负面"],
     "诱导投保": ["诱导投保", "限时抢购", "名额有限", "即将停售"],
     "避债避税": ["避债", "避税", "规避债务", "收益免税"],
-    "回访违规": ["阻碍.*回访", "阻挠.*回访", "回访过程中"],
+    "回访违规": [
+        "阻碍.*回访", "阻挠.*回访", "回访过程中", r"回访.{0,6}(?:问题|电话)",
+        r"诱导.{0,10}回访", "回访对象非", "回访记录",
+    ],
     "虚列费用套取资金": ["虚列费用", "套取费用", "虚假列支", "虚挂中介"],
     "代理人管理不到位": ["代理人管理", "执业登记"],
     "委托无资质机构销售": ["无资质", "委托.*销售"],
@@ -163,6 +183,41 @@ _GENERIC_PHRASE_BLOCKLIST = frozenset({
 })
 
 _DICT_PATH = Path(__file__).resolve().parents[2] / "data" / "dictionaries" / "risk_type_dictionary.csv"
+_CN_KEYWORDS_PATH = Path(__file__).resolve().parents[2] / "data" / "dictionaries" / "cn_tag_keywords.csv"
+
+
+@lru_cache(maxsize=1)
+def load_cn_tag_keywords() -> dict[str, list[str]]:
+    """优先读 data/dictionaries/cn_tag_keywords.csv；缺失时回退内置默认。"""
+    if _CN_KEYWORDS_PATH.exists():
+        loaded: dict[str, list[str]] = {}
+        with _CN_KEYWORDS_PATH.open(encoding="utf-8-sig", newline="") as f:
+            for row in csv.DictReader(f):
+                tag = (row.get("risk_tag") or "").strip()
+                kw = (row.get("keyword") or "").strip()
+                if not tag or not kw or tag == "其他":
+                    continue
+                bucket = loaded.setdefault(tag, [])
+                if kw not in bucket:
+                    bucket.append(kw)
+        if loaded:
+            return loaded
+    return {k: list(v) for k, v in _BUILTIN_CN_TAG_KEYWORDS.items()}
+
+
+@lru_cache(maxsize=1)
+def _merged_keyword_map() -> dict[str, list[str]]:
+    """CSV/内置关键词 ∪ risk_type_dictionary 典型行为引号短语。"""
+    merged: dict[str, list[str]] = {k: list(v) for k, v in load_cn_tag_keywords().items()}
+    for row in load_cn_tag_catalog():
+        tag = row["risk_tag"]
+        if tag == "其他":
+            continue
+        for phrase in _extract_phrases_from_typical(row.get("typical_behavior") or ""):
+            bucket = merged.setdefault(tag, [])
+            if phrase not in bucket and phrase not in _GENERIC_PHRASE_BLOCKLIST:
+                bucket.append(phrase)
+    return merged
 
 _QUOTE_RE = re.compile(r'[“"『「]([^”"』」]{2,24})[”"』」]')
 _REDIRECT_RE = re.compile(r"归入([^；;，,、（(]{2,20})")
@@ -223,21 +278,6 @@ def load_cn_tag_catalog() -> list[dict[str, str]]:
         }
         for t in CANONICAL_CN_TAGS
     ]
-
-
-@lru_cache(maxsize=1)
-def _merged_keyword_map() -> dict[str, list[str]]:
-    """硬编码关键词 ∪ CSV 引号短语。"""
-    merged: dict[str, list[str]] = {k: list(v) for k, v in CN_TAG_KEYWORDS.items()}
-    for row in load_cn_tag_catalog():
-        tag = row["risk_tag"]
-        if tag == "其他":
-            continue
-        for phrase in _extract_phrases_from_typical(row.get("typical_behavior") or ""):
-            bucket = merged.setdefault(tag, [])
-            if phrase not in bucket and phrase not in _GENERIC_PHRASE_BLOCKLIST:
-                bucket.append(phrase)
-    return merged
 
 
 @lru_cache(maxsize=1)
@@ -303,9 +343,16 @@ def competition_ids_to_cn_tags(competition_ids: list[str] | None,
 
 def normalize_cn_tags(tags: list[str] | None) -> list[str]:
     """将任意标签/别名/R00x/复合写法归一为 27 类标准标签。"""
+    return [r["normalized_label"] for r in normalize_cn_tags_detailed(tags)
+            if r["status"] == "ok" and r.get("normalized_label")]
+
+
+def normalize_cn_tags_detailed(tags: list[str] | None) -> list[dict]:
+    """带复核状态的标准化：无法识别时标记 needs_review，不静默丢弃原始标签。"""
     if not tags:
         return []
-    out: list[str] = []
+    out: list[dict] = []
+    seen_norm: set[str] = set()
     for raw in tags:
         if raw is None:
             continue
@@ -318,9 +365,22 @@ def normalize_cn_tags(tags: list[str] | None) -> list[str]:
                 parts = [p.strip() for p in text.split(sep) if p.strip()]
                 break
         for part in parts:
-            for tag in _expand_one_tag(part):
-                if tag not in out:
-                    out.append(tag)
+            mapped = _expand_one_tag(part)
+            if mapped:
+                for tag in mapped:
+                    if tag not in seen_norm:
+                        seen_norm.add(tag)
+                        out.append({
+                            "raw_label": part,
+                            "normalized_label": tag,
+                            "status": "ok",
+                        })
+            else:
+                out.append({
+                    "raw_label": part,
+                    "normalized_label": None,
+                    "status": "needs_review",
+                })
     return out
 
 

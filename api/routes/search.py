@@ -43,14 +43,19 @@ def _to_search_query(req: RetrieveRequest) -> SearchQuery:
 
 def _finalize_cn_tags(req: RetrieveRequest, retrieval, llm_risk_names: list[str] | None = None) -> list[str]:
     """最终对外分类：27 类中文标签；R00x 仅兜底。"""
-    case_tags = [t for r in retrieval.results[:5] for t in (r.risk_tags or [])]
+    from core.config import get_settings
+    settings = get_settings()
+    case_tags = [
+        t for r in retrieval.results[: settings.TAG_BACKFILL_TOP_CASES]
+        for t in (r.risk_tags or [])
+    ]
     return resolve_final_cn_tags(
         query_text=req.query_text,
         keyword_tags=getattr(retrieval, "predicted_cn_tags", None),
         case_tags=case_tags,
         llm_tags=llm_risk_names,
         competition_ids=retrieval.predicted_risk_ids,
-        max_tags=5,
+        max_tags=settings.CN_TAG_FINAL_MAX,
     )
 
 
@@ -140,7 +145,7 @@ async def batch_submission(
     generator=Depends(get_generator),
     risk_predictor=Depends(get_risk_predictor),
 ):
-    """读取 test_questions.jsonl 批量生成 submission.jsonl"""
+    """读取 test_questions.jsonl，生成 retrieval_submission.jsonl（失败写入 submission_errors.jsonl）。"""
     import time
 
     started = time.perf_counter()
@@ -149,29 +154,64 @@ async def batch_submission(
     if not questions:
         raise HTTPException(400, detail="empty test questions file")
 
-    output = Path(get_settings().DATA_DIR) / "eval" / "submission.jsonl"
-    output.parent.mkdir(parents=True, exist_ok=True)
+    eval_dir = Path(get_settings().DATA_DIR) / "eval"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    output = eval_dir / "retrieval_submission.jsonl"
+    errors_out = eval_dir / "submission_errors.jsonl"
 
-    with output.open("w", encoding="utf-8") as f:
-        for q in questions:
-            req = RetrieveRequest(
-                query_text=q["query_text"],
-                question_id=q.get("question_id"),
-                scene=q.get("scene"),
-                top_k=top_k,
-            )
-            try:
-                submission = await _build_submission(req, retriever, generator, risk_predictor)
-                f.write(submission.model_dump_json() + "\n")
-            except Exception as e:  # noqa: BLE001 - 单条失败不中断批量
-                logger.exception("Batch item failed: %s", q.get("question_id"))
-                f.write(json.dumps({
-                    "question_id": q.get("question_id"),
-                    "risk_type": "",
-                    "retrieved_cases": [],
-                    "suggestion": "",
-                    "error": str(e),
-                }, ensure_ascii=False) + "\n")
+    ok_rows: list[str] = []
+    err_rows: list[str] = []
+    seen_ids: set[str] = set()
+
+    for q in questions:
+        qid = str(q.get("question_id") or "").strip()
+        req = RetrieveRequest(
+            query_text=q["query_text"],
+            question_id=qid or None,
+            scene=q.get("scene"),
+            top_k=top_k,
+        )
+        try:
+            if not qid:
+                raise ValueError("missing question_id")
+            if qid in seen_ids:
+                raise ValueError(f"duplicate question_id: {qid}")
+            seen_ids.add(qid)
+
+            submission = await _build_submission(req, retriever, generator, risk_predictor)
+            payload = submission.model_dump()
+            # 禁止空 risk_type / 空 retrieved_cases / 额外字段进入最终提交
+            if not (payload.get("risk_type") or "").strip():
+                raise ValueError("empty risk_type")
+            if not payload.get("retrieved_cases"):
+                raise ValueError("empty retrieved_cases")
+            # 严格四字段
+            clean = {
+                "question_id": payload["question_id"],
+                "risk_type": payload["risk_type"],
+                "retrieved_cases": payload["retrieved_cases"],
+                "suggestion": payload.get("suggestion") or "",
+            }
+            ok_rows.append(json.dumps(clean, ensure_ascii=False))
+        except Exception as e:  # noqa: BLE001 - 单条失败不中断批量
+            logger.exception("Batch item failed: %s", qid)
+            err_rows.append(json.dumps({
+                "question_id": qid,
+                "error": str(e),
+                "query_text": (q.get("query_text") or "")[:200],
+            }, ensure_ascii=False))
+
+    output.write_text("\n".join(ok_rows) + ("\n" if ok_rows else ""), encoding="utf-8")
+    errors_out.write_text("\n".join(err_rows) + ("\n" if err_rows else ""), encoding="utf-8")
 
     took_ms = int((time.perf_counter() - started) * 1000)
-    return {"total": len(questions), "output_path": str(output), "took_ms": took_ms}
+    return {
+        "total": len(questions),
+        "submitted": len(ok_rows),
+        "failed": len(err_rows),
+        "unique_question_ids": len(seen_ids),
+        "output_path": str(output),
+        "errors_path": str(errors_out),
+        "took_ms": took_ms,
+        "schema_ok": len(ok_rows) == len(questions) and len(err_rows) == 0,
+    }

@@ -3,6 +3,7 @@ import type {
   CaseDetail,
   CnRiskTag,
   DocumentItem,
+  FeedbackRequest,
   HealthResponse,
   MaterialReviewResponse,
   Paginated,
@@ -162,6 +163,12 @@ export const api = {
 
   generateReview: (body: ReviewGenerateRequest) =>
     request<ReviewGenerateResponse>("/review/generate", jsonInit("POST", body)),
+
+  submitFeedback: (reviewId: string, body: FeedbackRequest) =>
+    request<{ review_id: string; feedback: string }>(
+      `/review/${encodeURIComponent(reviewId)}/feedback`,
+      jsonInit("PATCH", body),
+    ),
 
   reviewMaterialText: (text: string, scene?: string) =>
     request<MaterialReviewResponse>(

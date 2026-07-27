@@ -8,15 +8,12 @@ from core.redis_client import get_redis
 from engine.embedding.cache import CachedQueryEncoder
 from engine.embedding.provider import create_embedding_provider
 from engine.llm.client import create_llm_client
-from engine.retrieval.bm25_retriever import BM25Retriever
+from engine.retrieval.assemble import assemble_hybrid_retriever
 from engine.retrieval.hybrid_retriever import HybridRetriever
 from engine.retrieval.query_rewriter import QueryRewriter
 from engine.retrieval.reranker import NoopReranker, Reranker
 from engine.retrieval.risk_predictor import RiskPredictor
-from engine.retrieval.rule_retriever import RuleRetriever
 from engine.retrieval.synonym_expander import SynonymExpander
-from engine.retrieval.tag_retriever import TagRetriever
-from engine.retrieval.vector_retriever import VectorRetriever
 from engine.review.generator import ReviewGenerator
 from engine.review.material_reviewer import MaterialReviewer
 from engine.review.risk_locator import RiskSentenceLocator
@@ -51,19 +48,22 @@ async def init_app_state() -> None:
     risk_predictor = RiskPredictor(pool, llm_client=llm)
 
     reranker = (
-        Reranker(settings.RERANKER_MODEL, settings.RERANKER_DEVICE)
+        Reranker(
+            settings.RERANKER_MODEL,
+            settings.RERANKER_DEVICE,
+            batch_size=settings.RERANKER_BATCH_SIZE,
+            doc_max_chars=settings.RERANKER_DOC_MAX_CHARS,
+        )
         if settings.RERANKER_ENABLED else NoopReranker()
     )
 
-    retriever = HybridRetriever(
-        bm25=BM25Retriever(pool),
-        vector=VectorRetriever(pool),
-        tag=TagRetriever(pool),
-        rule=RuleRetriever(pool),
+    retriever = assemble_hybrid_retriever(
+        settings=settings,
+        pool=pool,
         rewriter=rewriter,
         risk_predictor=risk_predictor,
-        query_encoder=query_encoder,
         reranker=reranker,
+        query_encoder=query_encoder,
     )
 
     generator = ReviewGenerator(llm) if llm else None
@@ -77,8 +77,11 @@ async def init_app_state() -> None:
         state.material_reviewer = MaterialReviewer(
             pool=pool, locator=locator, retriever=retriever, generator=generator,
         )
-    logger.info("App state initialized (llm=%s, embedding=%s)",
-                bool(llm), embedder.model_name)
+    logger.info(
+        "App state initialized (llm=%s, embedding=%s, rerank_cand=%s, fusion=%s)",
+        bool(llm), embedder.model_name,
+        settings.RETRIEVAL_RERANK_CANDIDATES, settings.RETRIEVAL_FUSION_SIZE,
+    )
 
 
 class _NoLLMRewriter:

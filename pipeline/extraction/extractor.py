@@ -23,13 +23,34 @@ from pipeline.parser.base import ParseResult
 logger = logging.getLogger(__name__)
 
 CORE_FIELDS = ["party_name", "violation_behavior", "penalty_content", "regulator"]
-LLM_REFINE_THRESHOLD = 0.6
+DEFAULT_LLM_REFINE_THRESHOLD = 0.6
+
+
+def _matched_text(m: "re.Match") -> str:
+    """兼容含多个可选捕获组（转折短语懒惰分支 / 定长兜底分支）的模式。"""
+    for g in m.groups():
+        if g:
+            return g
+    return m.group(0)
 
 
 class ExtractorEngine:
-    def __init__(self, llm_client: DeepSeekClient | None = None, use_llm_refine: bool = True):
+    def __init__(
+        self,
+        llm_client: DeepSeekClient | None = None,
+        use_llm_refine: bool = True,
+        *,
+        llm_refine_threshold: float | None = None,
+    ):
         self.llm = llm_client
         self.use_llm_refine = use_llm_refine
+        if llm_refine_threshold is None:
+            try:
+                from core.config import get_settings
+                llm_refine_threshold = get_settings().LLM_REFINE_THRESHOLD
+            except Exception:  # noqa: BLE001
+                llm_refine_threshold = DEFAULT_LLM_REFINE_THRESHOLD
+        self.llm_refine_threshold = llm_refine_threshold
 
     def extract(self, parse_result: ParseResult, *, file_id: str,
                 source_file: str) -> list[ExtractedCase]:
@@ -41,14 +62,21 @@ class ExtractorEngine:
                 for r in records
             ]
         else:
-            # 路径②：长文本正则抽取（单文档单案例；多案例决定书由段落切分扩展）
-            case = self._from_text(parse_result.markdown, file_id=file_id, source_file=source_file)
-            cases = [case] if case else []
+            # 路径②：长文本 → 按文号/当事人切分多案例后分别抽取
+            segments = self._split_case_segments(parse_result.markdown)
+            cases = []
+            for seg in segments:
+                case = self._from_text(seg, file_id=file_id, source_file=source_file)
+                if case:
+                    cases.append(case)
+            if not cases:
+                case = self._from_text(parse_result.markdown, file_id=file_id, source_file=source_file)
+                cases = [case] if case else []
 
         for case in cases:
             self._infer_institution_type(case)
             self._validate(case)
-            if (case.overall_confidence < LLM_REFINE_THRESHOLD
+            if (case.overall_confidence < self.llm_refine_threshold
                     and self.use_llm_refine and self.llm is not None):
                 self._llm_refine(case)
                 self._validate(case)
@@ -80,6 +108,74 @@ class ExtractorEngine:
 
     # ---------- 路径②：长文本 ----------
 
+    def _split_case_segments(self, text: str) -> list[str]:
+        """按处罚文号切分为多案例片段（仅在文号确有差异时才拆分）。
+
+        注意：不再仅凭「当事人」出现次数拆分——单一处罚决定书里常见
+        「机构 + 责任人」两个「当事人」小节（一案两罚），若按此拆分会把
+        同一案例误切成两段，反而丢失机构主体的完整字段。
+        """
+        if not text or not text.strip():
+            return []
+        # 同一文号在正文中重复出现（页眉/页脚/多次引用）不代表多案例，需先去重
+        docnos: list[re.Match] = []
+        seen_no: set[str] = set()
+        for m in PATTERNS["penalty_doc_no"].finditer(text):
+            key = re.sub(r"\s+", "", m.group(1))
+            if key in seen_no:
+                continue
+            seen_no.add(key)
+            docnos.append(m)
+
+        if len(docnos) >= 2:
+            segments: list[str] = []
+            for i, m in enumerate(docnos):
+                start = m.start()
+                end = docnos[i + 1].start() if i + 1 < len(docnos) else len(text)
+                lookback = text[max(0, start - 320):start]
+                party_hits = list(re.finditer(r"当事人", lookback))
+                seg_start = start
+                if party_hits:
+                    nearest = party_hits[-1]
+                    # 若回看跨越了更早的文号，则从当前文号起切，避免吞并上一案例
+                    earlier_doc = PATTERNS["penalty_doc_no"].search(lookback[nearest.start():])
+                    if not earlier_doc:
+                        seg_start = max(0, start - 320) + nearest.start()
+                seg = text[seg_start:end].strip()
+                if len(seg) > 40:
+                    segments.append(seg)
+            if len(segments) >= 2:
+                return segments
+        return [text]
+
+    @staticmethod
+    def _build_evidence_snippet(text: str, max_chars: int = 1800) -> str:
+        """汇聚文号/当事人/违法事实/处罚/落款附近片段，供 LLM 纠错（非简单截头 500 字）。"""
+        chunks: list[str] = []
+        if text[:280].strip():
+            chunks.append(text[:280].strip())
+        for key in ("penalty_doc_no", "party_name", "violation_behavior",
+                    "penalty_content", "regulator", "legal_basis"):
+            pat = PATTERNS.get(key)
+            if not pat:
+                continue
+            m = pat.search(text)
+            if not m:
+                continue
+            start = max(0, m.start() - 48)
+            end = min(len(text), m.end() + 160)
+            chunks.append(text[start:end].strip())
+        if len(text) > 400:
+            chunks.append(text[-400:].strip())
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for c in chunks:
+            if c and c not in seen:
+                seen.add(c)
+                ordered.append(c)
+        joined = "\n…\n".join(ordered)
+        return joined[:max_chars]
+
     def _from_text(self, text: str, *, file_id: str, source_file: str) -> ExtractedCase | None:
         if not text.strip():
             return None
@@ -87,14 +183,14 @@ class ExtractorEngine:
         case = ExtractedCase(
             file_id=file_id, source_file=source_file,
             extraction_method="regex",
-            raw_text_snippet=text[:500],
+            raw_text_snippet=self._build_evidence_snippet(text),
         )
 
         for field_name in ("penalty_doc_no", "party_name", "violation_behavior",
                            "penalty_content", "fine_amount", "legal_basis"):
             m = PATTERNS[field_name].search(text)
             if m:
-                setattr(case, field_name, m.group(1).strip())
+                setattr(case, field_name, _matched_text(m).strip())
                 case.field_confidences[field_name] = FieldConfidence.HIGH.value
             else:
                 case.field_confidences[field_name] = FieldConfidence.LOW.value
@@ -108,7 +204,7 @@ class ExtractorEngine:
         if not case.violation_behavior:
             m = PATTERNS["violation_behavior_alt"].search(text)
             if m:
-                case.violation_behavior = m.group(1).strip()[:500]
+                case.violation_behavior = _matched_text(m).strip()[:1200]
                 case.field_confidences["violation_behavior"] = FieldConfidence.MEDIUM.value
 
         if not case.penalty_content:
@@ -147,10 +243,11 @@ class ExtractorEngine:
         """清洗当事人/机关噪声，对齐常见公示截断写法。"""
         if case.party_name:
             name = case.party_name.strip(" ：:\t")
-            # 金标常见截断：公司名(以下简称
-            m = re.search(r"^(.+?)\(以下简称", name)
+            # 金标常见写法：公司名(以下简称XX) —— 需保留完整括注，
+            # 之前只截到「(以下简称」四字、丢掉简称与右括号，导致必然不等。
+            m = re.search(r"^(.+?[（(]以下简称[^）)]*[）)])", name)
             if m:
-                name = m.group(1).rstrip() + "(以下简称"
+                name = m.group(1)
             else:
                 # 去掉尾部「告知了…」「行政处罚…」等粘连
                 name = re.split(
@@ -168,10 +265,16 @@ class ExtractorEngine:
 
         if case.regulator:
             reg = case.regulator.strip()
-            # 截到机关名为止，去掉「行政处罚决定…」尾巴
+            # 截到机关名为止，去掉「行政处罚决定…」尾巴。
+            # 「金融监督管理总局」后常跟地区+「监管局/监管分局」（2023 新称谓），
+            # 该分支必须放在前面，否则懒惰量词会在「总局」处过早停止，丢掉地区部分。
             m = re.search(
-                r"^([\u4e00-\u9fff]{2,40}?(?:监管分局|监管局|银保监局|保监局|"
-                r"金融监督管理总局|银保监会|保监会))",
+                r"^([\u4e00-\u9fff]{2,40}?(?:"
+                r"金融监督管理总局[\u4e00-\u9fff]{0,10}监管分局"
+                r"|金融监督管理总局[\u4e00-\u9fff]{0,10}监管局"
+                r"|金融监督管理总局"
+                r"|监管分局|监管局|银保监局|保监局|银保监会|保监会"
+                r"))",
                 reg,
             )
             if m:

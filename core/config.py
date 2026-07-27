@@ -40,6 +40,31 @@ class Settings(BaseSettings):
     RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
     RERANKER_DEVICE: str = "cpu"
     RERANKER_ENABLED: bool = True
+    RERANKER_BATCH_SIZE: int = 16
+    RERANKER_DOC_MAX_CHARS: int = 1200
+
+    # ---- 检索召回量 / 融合 / 精排 ----
+    RECALL_BM25: int = 80
+    RECALL_VECTOR: int = 100
+    RECALL_TAG: int = 80
+    RECALL_RULE: int = 30
+    RETRIEVAL_FUSION_SIZE: int = 100
+    RETRIEVAL_RERANK_CANDIDATES: int = 40
+    RRF_K: int = 60
+    RRF_W_BM25: float = 1.15
+    RRF_W_VECTOR: float = 1.45
+    RRF_W_TAG: float = 1.0
+    RRF_W_RULE: float = 1.2
+    RRF_MULTI_CHANNEL_BONUS: float = 0.08
+    CN_TAG_PREDICT_MAX: int = 3
+    CN_TAG_FINAL_MAX: int = 5
+    CN_TAG_BM25_APPEND: int = 2
+    RISK_ID_CAP: int = 3
+    TAG_BACKFILL_TOP_CASES: int = 5
+
+    # ---- 抽取 / 解析 ----
+    LLM_REFINE_THRESHOLD: float = 0.6
+    PARSE_CONFIDENCE_THRESHOLD: float = 0.5
 
     # ---- 解析 ----
     MINERU_ENGINE: str = "hybrid"
@@ -53,6 +78,14 @@ class Settings(BaseSettings):
     COMP_RAW_TEXT_DIR: str = ""
     EXAMPLE_CORPUS_DIR: str = ""
     SUBMISSION_RISK_STYLE: str = "cn"  # cn=中文标签；competition=R00x
+
+    def rrf_channel_weights(self) -> dict[str, float]:
+        return {
+            "bm25": self.RRF_W_BM25,
+            "vector": self.RRF_W_VECTOR,
+            "tag": self.RRF_W_TAG,
+            "rule": self.RRF_W_RULE,
+        }
 
 
 @lru_cache

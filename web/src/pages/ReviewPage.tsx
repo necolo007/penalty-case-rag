@@ -262,27 +262,36 @@ export function ReviewPage() {
                         <div className="flex gap-2">
                           <button
                             type="button"
-                            onClick={() =>
-                              reviewSession.setFeedback({ ...s.feedback, [id]: "pass" })
-                            }
+                            disabled={!!s.feedbackSaving[id]}
+                            onClick={() => void reviewSession.submitCaseFeedback(id, "agree")}
                             className={[
                               "min-h-9 rounded-lg px-2.5 text-xs font-medium",
-                              fb === "pass" ? "bg-accent text-white" : "border border-border bg-white",
+                              fb === "agree" ? "bg-accent text-white" : "border border-border bg-white",
                             ].join(" ")}
                           >
-                            复核通过
+                            确认风险
                           </button>
                           <button
                             type="button"
-                            onClick={() =>
-                              reviewSession.setFeedback({ ...s.feedback, [id]: "wrong" })
-                            }
+                            disabled={!!s.feedbackSaving[id]}
+                            onClick={() => void reviewSession.submitCaseFeedback(id, "partial")}
                             className={[
                               "min-h-9 rounded-lg px-2.5 text-xs font-medium",
-                              fb === "wrong" ? "bg-destructive text-white" : "border border-border bg-white",
+                              fb === "partial" ? "bg-amber-500 text-white" : "border border-border bg-white",
                             ].join(" ")}
                           >
-                            标记误判
+                            部分正确
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!!s.feedbackSaving[id]}
+                            onClick={() => void reviewSession.submitCaseFeedback(id, "disagree")}
+                            className={[
+                              "min-h-9 rounded-lg px-2.5 text-xs font-medium",
+                              fb === "disagree" ? "bg-destructive text-white" : "border border-border bg-white",
+                            ].join(" ")}
+                          >
+                            确认误报
                           </button>
                         </div>
                       </div>
@@ -306,9 +315,9 @@ export function ReviewPage() {
               <strong className="text-primary">{String(s.materialReport.overall_risk)}</strong>
             </p>
           ) : null}
-          {s.materialReport.summary ? (
+          {s.materialReport.summary || s.materialReport.overall_suggestion ? (
             <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
-              {String(s.materialReport.summary)}
+              {String(s.materialReport.summary || s.materialReport.overall_suggestion)}
             </p>
           ) : null}
           {Array.isArray(s.materialReport.risk_sentences) && s.materialReport.risk_sentences.length > 0 ? (
@@ -319,6 +328,9 @@ export function ReviewPage() {
                     <span className="mb-2 inline-block rounded-md bg-red-50 px-2 py-0.5 text-xs font-semibold text-destructive">
                       {String(item.risk_level)}
                     </span>
+                  ) : null}
+                  {Array.isArray(item.risk_types) && item.risk_types.length > 0 ? (
+                    <p className="mb-1 text-xs text-muted-fg">{item.risk_types.join("；")}</p>
                   ) : null}
                   <p className="text-sm text-foreground">{item.text || JSON.stringify(item)}</p>
                   {item.suggestion ? (

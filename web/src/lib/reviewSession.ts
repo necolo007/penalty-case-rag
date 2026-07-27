@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { api, ApiError } from "../api/client";
-import type { MaterialReviewResponse, ReviewGenerateResponse } from "../api/types";
+import type { FeedbackVerdict, MaterialReviewResponse, ReviewGenerateResponse } from "../api/types";
 
 const STORAGE_KEY = "anku-review-session-v1";
 
@@ -16,7 +16,9 @@ export type ReviewSessionState = {
   error: string | null;
   review: ReviewGenerateResponse | null;
   materialReport: MaterialReviewResponse | null;
-  feedback: Record<string, "pass" | "wrong">;
+  /** UI 本地态；与后端 agree/disagree/partial 对应 */
+  feedback: Record<string, FeedbackVerdict>;
+  feedbackSaving: Record<string, boolean>;
   thinkFinished: boolean;
   thinkElapsedMs: number | null;
   thinkHint: string;
@@ -36,6 +38,7 @@ const defaultState: ReviewSessionState = {
   review: null,
   materialReport: null,
   feedback: {},
+  feedbackSaving: {},
   thinkFinished: false,
   thinkElapsedMs: null,
   thinkHint: "",
@@ -63,7 +66,20 @@ function loadPersisted(): Partial<ReviewSessionState> {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY);
     if (!raw) return {};
-    return JSON.parse(raw) as PersistedSlice;
+    const parsed = JSON.parse(raw) as PersistedSlice & {
+      feedback?: Record<string, string>;
+    };
+    // 兼容旧版 pass/wrong
+    if (parsed.feedback) {
+      const mapped: Record<string, FeedbackVerdict> = {};
+      for (const [k, v] of Object.entries(parsed.feedback)) {
+        if (v === "pass" || v === "agree") mapped[k] = "agree";
+        else if (v === "wrong" || v === "disagree") mapped[k] = "disagree";
+        else if (v === "partial") mapped[k] = "partial";
+      }
+      parsed.feedback = mapped;
+    }
+    return parsed;
   } catch {
     return {};
   }
@@ -91,7 +107,13 @@ function persist(state: ReviewSessionState) {
   }
 }
 
-let state: ReviewSessionState = { ...defaultState, ...loadPersisted(), loading: false, justFinished: false };
+let state: ReviewSessionState = {
+  ...defaultState,
+  ...loadPersisted(),
+  loading: false,
+  feedbackSaving: {},
+  justFinished: false,
+};
 let runSeq = 0;
 const listeners = new Set<() => void>();
 
@@ -145,13 +167,42 @@ export const reviewSession = {
   setMaterial: (material: string) => patch({ material }),
   setScene: (scene: string) => patch({ scene }),
   setTopK: (topK: number) => patch({ topK }),
-  setFeedback: (feedback: Record<string, "pass" | "wrong">) => patch({ feedback }),
+  setFeedback: (feedback: Record<string, FeedbackVerdict>) => patch({ feedback }),
+  /** 提交人工复核到后端（agree / disagree / partial） */
+  submitCaseFeedback: async (caseKey: string, verdict: FeedbackVerdict, note?: string) => {
+    const reviewId = state.review?.review_id;
+    if (!reviewId) {
+      patch({ error: "缺少 review_id，无法提交复核" });
+      return;
+    }
+    patch({
+      feedback: { ...state.feedback, [caseKey]: verdict },
+      feedbackSaving: { ...state.feedbackSaving, [caseKey]: true },
+      error: null,
+    });
+    try {
+      await api.submitFeedback(reviewId, {
+        feedback: verdict,
+        feedback_note: note || `case_id=${caseKey}`,
+        reviewer: "web-ui",
+      });
+    } catch (err) {
+      patch({
+        error: err instanceof ApiError ? err.message : "复核提交失败",
+      });
+    } finally {
+      const nextSaving = { ...state.feedbackSaving };
+      delete nextSaving[caseKey];
+      patch({ feedbackSaving: nextSaving });
+    }
+  },
   dismissJustFinished: () => patch({ justFinished: false }),
   clearResults: () =>
     patch({
       review: null,
       materialReport: null,
       feedback: {},
+      feedbackSaving: {},
       error: null,
       thinkFinished: false,
       thinkElapsedMs: null,
@@ -167,7 +218,7 @@ export const reviewSession = {
     }
     const runId = ++runSeq;
     beginThink(query);
-    patch({ materialReport: null, feedback: {}, review: null });
+    patch({ materialReport: null, feedback: {}, feedbackSaving: {}, review: null });
     try {
       const res = await api.generateReview({
         query_text: query,

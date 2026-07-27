@@ -24,15 +24,14 @@ from core.db import close_pool, create_pool
 from core.redis_client import close_redis, get_redis
 from engine.embedding.cache import CachedQueryEncoder
 from engine.embedding.provider import create_embedding_provider
+from engine.llm.client import create_llm_client
+from engine.retrieval.assemble import assemble_hybrid_retriever
 from engine.retrieval.base import SearchQuery
-from engine.retrieval.bm25_retriever import BM25Retriever
 from engine.retrieval.hybrid_retriever import HybridRetriever
+from engine.retrieval.query_rewriter import QueryRewriter
 from engine.retrieval.reranker import NoopReranker, Reranker
 from engine.retrieval.risk_predictor import RiskPredictor
-from engine.retrieval.rule_retriever import RuleRetriever
 from engine.retrieval.synonym_expander import SynonymExpander
-from engine.retrieval.tag_retriever import TagRetriever
-from engine.retrieval.vector_retriever import VectorRetriever
 from eval_metrics import compute_retrieval_metrics
 
 
@@ -67,7 +66,10 @@ class SynonymOnlyRewriter:
         return (await self.expander.expand(query_text)) or query_text
 
 
-async def build_retriever(*, use_rerank: bool) -> HybridRetriever:
+async def build_retriever(
+    *, use_rerank: bool, use_llm_rewrite: bool = False,
+    rerank_candidates: int | None = None,
+) -> HybridRetriever:
     settings = get_settings()
     pool = await create_pool()
     redis = await get_redis()
@@ -75,21 +77,33 @@ async def build_retriever(*, use_rerank: bool) -> HybridRetriever:
     expander = SynonymExpander(pool)
     if use_rerank and settings.RERANKER_ENABLED:
         try:
-            reranker = Reranker(settings.RERANKER_MODEL, settings.RERANKER_DEVICE)
+            reranker = Reranker(
+                settings.RERANKER_MODEL,
+                settings.RERANKER_DEVICE,
+                batch_size=settings.RERANKER_BATCH_SIZE,
+                doc_max_chars=settings.RERANKER_DOC_MAX_CHARS,
+            )
         except Exception as e:  # noqa: BLE001
             print(f"Reranker unavailable ({e}), fallback Noop")
             reranker = NoopReranker()
     else:
         reranker = NoopReranker()
-    return HybridRetriever(
-        bm25=BM25Retriever(pool),
-        vector=VectorRetriever(pool),
-        tag=TagRetriever(pool),
-        rule=RuleRetriever(pool),
-        rewriter=SynonymOnlyRewriter(expander),
-        risk_predictor=RiskPredictor(pool, llm_client=None),
-        query_encoder=CachedQueryEncoder(embedder, redis, ttl=settings.EMBEDDING_CACHE_TTL),
+
+    # 默认用同义词词典改写（快、免费，但不是生产真实行为）；
+    # --llm-rewrite 切换为生产同款的 LLM 改写器，用于验证「口语→法言法语」
+    # 对语义检索命中率的真实增益。
+    llm_client = create_llm_client(settings) if use_llm_rewrite else None
+    rewriter = QueryRewriter(llm_client, expander) if llm_client else SynonymOnlyRewriter(expander)
+    risk_predictor = RiskPredictor(pool, llm_client=llm_client)
+
+    return assemble_hybrid_retriever(
+        settings=settings,
+        pool=pool,
+        rewriter=rewriter,
+        risk_predictor=risk_predictor,
         reranker=reranker,
+        query_encoder=CachedQueryEncoder(embedder, redis, ttl=settings.EMBEDDING_CACHE_TTL),
+        rerank_candidates=rerank_candidates,
     )
 
 
@@ -99,6 +113,10 @@ async def main() -> None:
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--rerank", action="store_true")
+    parser.add_argument("--llm-rewrite", action="store_true",
+                        help="使用生产同款 LLM 查询改写（否则用同义词词典降级改写）")
+    parser.add_argument("--rerank-candidates", type=int, default=None,
+                        help="精排候选数（默认读 Settings.RETRIEVAL_RERANK_CANDIDATES）")
     parser.add_argument("--questions", default=None)
     parser.add_argument("--gold", default=None)
     parser.add_argument("--submission-out", default=None)
@@ -111,17 +129,26 @@ async def main() -> None:
         tag = "train"
     else:
         q_path = args.questions or "data/eval/test_questions.jsonl"
-        g_path = args.gold or "data/eval/test_gold_labels.jsonl"
+        g_path = args.gold or "data/eval/quarantine/test_gold_labels.jsonl"
         tag = "test"
 
     q_file = _ROOT / q_path if not Path(q_path).is_absolute() else Path(q_path)
     g_file = _ROOT / g_path if not Path(g_path).is_absolute() else Path(g_path)
+    # 兼容旧路径：若 quarantine 不存在则回退根目录（并警告）
+    if tag == "test" and not g_file.exists():
+        legacy = _ROOT / "data/eval/test_gold_labels.jsonl"
+        if legacy.exists():
+            print("WARNING: using leaked data/eval/test_gold_labels.jsonl; "
+                  "prefer quarantine/ and avoid tuning against it.")
+            g_file = legacy
     questions = _normalize_questions(_load_jsonl(q_file))
     gold = _load_jsonl(g_file)
     if args.limit:
         questions = questions[: args.limit]
 
     suffix = "rerank" if args.rerank else "norerank"
+    if args.llm_rewrite:
+        suffix += "_llm"
     sub_out = Path(args.submission_out or f"data/eval/submission_{tag}_{suffix}.jsonl")
     rep_out = Path(args.report_out or f"data/eval/eval_report_{tag}_{suffix}.json")
     if not sub_out.is_absolute():
@@ -129,8 +156,11 @@ async def main() -> None:
     if not rep_out.is_absolute():
         rep_out = _ROOT / rep_out
 
-    print(f"split={tag} n={len(questions)} rerank={args.rerank} top_k={args.top_k}")
-    retriever = await build_retriever(use_rerank=args.rerank)
+    print(f"split={tag} n={len(questions)} rerank={args.rerank} llm_rewrite={args.llm_rewrite} top_k={args.top_k}")
+    retriever = await build_retriever(
+        use_rerank=args.rerank, use_llm_rewrite=args.llm_rewrite,
+        rerank_candidates=args.rerank_candidates,
+    )
 
     submission = []
     for i, q in enumerate(questions, 1):

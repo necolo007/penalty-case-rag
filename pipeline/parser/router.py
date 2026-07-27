@@ -41,8 +41,21 @@ class PdfPlumberTextParser(BaseParser):
 
 
 class DocumentRouter:
-    def __init__(self, mineru_engine: str = "hybrid", enable_mineru: bool = True,
-                 enable_ocr: bool = True):
+    def __init__(
+        self,
+        mineru_engine: str = "hybrid",
+        enable_mineru: bool = True,
+        enable_ocr: bool = True,
+        *,
+        confidence_threshold: float | None = None,
+    ):
+        if confidence_threshold is None:
+            try:
+                from core.config import get_settings
+                confidence_threshold = get_settings().PARSE_CONFIDENCE_THRESHOLD
+            except Exception:  # noqa: BLE001
+                confidence_threshold = CONFIDENCE_THRESHOLD
+        self.confidence_threshold = confidence_threshold
         self.table_parser = TableParser()
         self.text_pdf_parser: BaseParser
         if enable_mineru:
@@ -76,14 +89,14 @@ class DocumentRouter:
 
         if pdf_type == PDFType.TABLE_DISCLOSURE:
             result = self.table_parser.parse(doc)
-            if result.success and result.confidence >= CONFIDENCE_THRESHOLD:
+            if result.success and result.confidence >= self.confidence_threshold:
                 return result
             logger.info("Table parsing weak (conf=%.2f), fallback to text pipeline",
                         result.confidence)
 
         # 决定书 / 表格解析失败 → 长文本管线
         result = self._parse_text_pdf(doc)
-        if result.success and result.confidence >= CONFIDENCE_THRESHOLD:
+        if result.success and result.confidence >= self.confidence_threshold:
             return result
 
         # 置信度不足 → OCR 兜底

@@ -58,7 +58,7 @@ class SubmissionCase(BaseModel):
 
 
 class SubmissionResponse(BaseModel):
-    """严格对齐 submission.jsonl schema；risk_type 为 27 类中文标签分号拼接"""
+    """严格对齐 retrieval_submission.jsonl schema；risk_type 为 27 类中文标签分号拼接"""
     question_id: Optional[str]
     risk_type: str
     retrieved_cases: list[SubmissionCase]

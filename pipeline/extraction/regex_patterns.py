@@ -1,6 +1,61 @@
 """字段抽取正则模式库。"""
 
 import re
+from pathlib import Path
+
+
+def _sp(label: str) -> str:
+    """构造允许字间夹杂空白的标签正则。
+
+    OCR/PDF 抽取的公示表表头常见逐字加空格（如「受 处 罚 单 位 名 称」），
+    若按字面量精确匹配会导致标签整体 NOMATCH。对标签中每个字符之间插入
+    可选空白（含全角空格），内容字符本身不受影响。
+    """
+    return r"[ \t\u3000]*".join(re.escape(ch) for ch in label)
+
+
+# 违法事实描述常跨多行（OCR/PDF 逐行断行），需用 [\s\S] 跨行匹配；
+# 用以下"转折短语"作为终止边界（进入法律依据/处罚决定部分即停止），
+# 避免把处罚依据、处罚决定文字也吞进 violation_behavior。
+_VIOLATION_STOP = (
+    r"(?:"
+    r"你(?:公司|单位|机构)?[^\n]{0,20}(?:上述行为)?违反"
+    r"|上述(?:行为|事实)(?:[，,])?(?:已)?违反"
+    r"|违反(?:了)?《"
+    r"|已构成[^\n]{0,10}(?:情形|行为)"
+    r"|根据《"
+    r"|依据《"
+    r"|依照《"
+    r"|我(?:会|局|处|厅)(?:认为|决定|拟)"
+    r"|本机关(?:认为|决定)"
+    r"|经研究决定"
+    r"|经审议决定"
+    r"|综上"
+    r")"
+)
+
+_PARTY_LABEL = (
+    r"(?:" + _sp("当事人名称") + r"|" + _sp("当事人单位名称") + r"|" + _sp("当事人单位") + r"|"
+    + _sp("当事人") + r"|" + _sp("受处罚单位名称") + r"|" + _sp("受处罚单位") + r"|"
+    + _sp("受处罚人") + r"|" + _sp("被处罚人") + r")"
+)
+
+_VIOLATION_LABEL = (
+    r"(?:" + _sp("主要违法违规事实") + r"|" + _sp("主要违法违规行为") + r"|"
+    + _sp("违法违规事实") + r"|" + _sp("违法违规行为") + r"|"
+    + _sp("违法事实") + r"|" + _sp("违法行为") + r"|"
+    + _sp("违规事实") + r"|" + _sp("违规行为") + r")"
+)
+
+_PENALTY_LABEL = (
+    r"(?:" + _sp("行政处罚决定") + r"|" + _sp("行政处罚内容") + r"|" + _sp("行政处罚意见") + r"|"
+    + _sp("处罚决定") + r"|" + _sp("处罚内容") + r"|" + _sp("处罚意见") + r")"
+)
+
+_REGULATOR_LABEL = (
+    r"(?:" + _sp("作出处罚决定的机关名称") + r"|" + _sp("作出处罚决定的机关") + r"|"
+    + _sp("处罚机关") + r"|" + _sp("决定机关") + r"|" + _sp("作出机关") + r")"
+)
 
 PATTERNS = {
     "penalty_doc_no": re.compile(
@@ -8,10 +63,10 @@ PATTERNS = {
         r"[〔\[（(]\d{4}[〕\]）)]\s*第?\s*\d+\s*号)"
     ),
 
-    # 当事人：覆盖决定书/公示表多种写法
+    # 当事人：覆盖决定书/公示表多种写法，标签本身容忍逐字空格（OCR 表头常见）。
+    # 排除逗号：公示表常紧跟「，地址XX，负责人XX」，逗号后不属于主体名称。
     "party_name": re.compile(
-        r"(?:当事人(?:名称|单位名称)?|受处罚(?:单位|人)|被处罚人|当事人单位)"
-        r"[：:\s]*([^\n。；;]{2,80})"
+        _PARTY_LABEL + r"[：:\s]*([^\n。；;，,]{2,80})"
     ),
     "party_name_alt": re.compile(
         r"(?:经查[，,]?\s*|对)([\u4e00-\u9fffA-Za-z0-9（）()]{4,60}?"
@@ -19,20 +74,26 @@ PATTERNS = {
         r"(?:公司|支公司|分公司|中心支公司))"
     ),
 
+    # 主分支：懒惰匹配至转折短语（跨行）；找不到转折短语则退化为定长跨行截取，
+    # 保证长文本仍能抓到完整违法事实枚举（而不是被首个换行截断为几个字）。
     "violation_behavior": re.compile(
-        r"(?:主要)?(?:违法|违规|违法违规)\s*(?:事实|行为)(?:[（(][^）)]*[）)])?"
-        r"[：:]\s*([^\n]{1,800})"
+        _VIOLATION_LABEL + r"(?:[（(][^）)]*[）)])?[：:]\s*"
+        r"(?:([\s\S]{10,1200}?)(?=" + _VIOLATION_STOP + r")|([\s\S]{10,700}))"
     ),
     "violation_behavior_alt": re.compile(
         r"(?:存在(?:以下|下列)?(?:违法|违规)行为[：:]?\s*|经查[，,]?\s*)"
-        r"([^\n]{8,600})"
+        r"(?:([\s\S]{8,1200}?)(?=" + _VIOLATION_STOP + r")|([\s\S]{8,500}))"
     ),
 
     "penalty_content": re.compile(
-        r"(?:行政)?处罚\s*(?:决定|内容|意见)?[：:]\s*([^\n]{1,400})"
+        _PENALTY_LABEL + r"[：:]\s*([^\n]{1,400})"
     ),
+    # 处罚决定句常跨行且以「。」收尾，用 [^。] 天然跨行、并锚定在具体处罚动作词上，
+    # 避免吞并前面的违法事实枚举。
     "penalty_content_alt": re.compile(
-        r"((?:决定给予|给予|责令)[^\n]{0,40}(?:罚款|警告|没收)[^\n]{0,80})"
+        r"((?:我(?:会|局|处|厅)|本机关|经研究决定|经审议决定)?[^。]{0,20}?"
+        r"(?:决定(?:给予|对)?|给予|处以|责令)[^。]{0,30}?"
+        r"(?:罚款|警告|没收违法所得|吊销(?:业务)?许可证|暂停[^。]{0,10}业务)[^。]{0,120}。)"
     ),
 
     "fine_amount": re.compile(
@@ -40,8 +101,7 @@ PATTERNS = {
     ),
 
     "regulator": re.compile(
-        r"(?:作出处罚决定的机关(?:名称)?|处罚机关|决定机关|作出机关)"
-        r"[：:\s]*([\u4e00-\u9fff]{4,50}?(?:监管局|监管分局|银保监局|金融监督管理总局"
+        _REGULATOR_LABEL + r"[：:\s]*([\u4e00-\u9fff]{4,50}?(?:监管局|监管分局|银保监局|金融监督管理总局"
         r"[\u4e00-\u9fff]{0,12}|保监局|银保监会|保监会))"
     ),
 
@@ -63,7 +123,9 @@ PATTERNS = {
 }
 
 # 文号地域字 → 常见监管机关简称（用于 regulator 缺失时兜底）
-DOCNO_REGION_REGULATOR = {
+_DOCNO_REGION_PATH = Path(__file__).resolve().parents[2] / "data" / "dictionaries" / "docno_region_regulator.csv"
+
+_BUILTIN_DOCNO_REGION_REGULATOR = {
     "京": "北京银保监局",
     "沪": "上海银保监局",
     "津": "天津银保监局",
@@ -96,6 +158,24 @@ DOCNO_REGION_REGULATOR = {
     "黑": "黑龙江银保监局",
     "蒙": "内蒙古银保监局",
 }
+
+
+def _load_docno_region_regulator() -> dict[str, str]:
+    if _DOCNO_REGION_PATH.exists():
+        import csv
+        loaded: dict[str, str] = {}
+        with _DOCNO_REGION_PATH.open(encoding="utf-8-sig", newline="") as f:
+            for row in csv.DictReader(f):
+                region = (row.get("region") or "").strip()
+                regulator = (row.get("regulator") or "").strip()
+                if region and regulator:
+                    loaded[region] = regulator
+        if loaded:
+            return loaded
+    return dict(_BUILTIN_DOCNO_REGION_REGULATOR)
+
+
+DOCNO_REGION_REGULATOR = _load_docno_region_regulator()
 
 INSURANCE_KEYWORDS = [
     "人寿保险", "财产保险", "健康保险", "养老保险",

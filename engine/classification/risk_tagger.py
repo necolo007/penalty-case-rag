@@ -56,8 +56,12 @@ class RiskTagger:
                 if iid in id_map:
                     display_tags.extend(id_map[iid]["display_tags"] or [])
 
-        # 中文词典：规则为空时补全；规则已有时仅补充未覆盖的细粒度标签（最多 2 个）
-        cn_tags = predict_cn_tags_by_keywords(violation_behavior, max_tags=3)
+        # 中文词典：规则为空时补全；规则已有时仅补充未覆盖的细粒度标签
+        from core.config import get_settings
+        settings = get_settings()
+        cn_tags = predict_cn_tags_by_keywords(
+            violation_behavior, max_tags=settings.CN_TAG_PREDICT_MAX,
+        )
         rule_tags = normalize_cn_tags(display_tags)
         if not rule_tags:
             display_tags = cn_tags
@@ -71,7 +75,7 @@ class RiskTagger:
             else:
                 display_tags = rule_tags
 
-        display_tags = normalize_cn_tags(display_tags)[:3]
+        display_tags = normalize_cn_tags(display_tags)[: settings.CN_TAG_PREDICT_MAX]
         internal_ids = list(dict.fromkeys(internal_ids))[:5]
         # R00x：以内部三级映射为主；中文关键词仅在标签很少时补充，降低假阳性
         competition_ids = list(dict.fromkeys(
@@ -83,7 +87,7 @@ class RiskTagger:
                     competition_ids.append(cid)
         return {
             "internal_ids": internal_ids,
-            "competition_ids": competition_ids[:3],
+            "competition_ids": competition_ids[: settings.RISK_ID_CAP],
             "display_tags": display_tags,
             "method": method,
         }

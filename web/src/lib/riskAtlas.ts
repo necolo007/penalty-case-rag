@@ -21,7 +21,7 @@ export interface RiskMeta {
   phrases: string[];
   suggestion: string;
   heat: RiskHeat;
-  /** 近30天相对增幅示意（UI 展示，无后端时按占比推算） */
+  /** 近30天相对增幅示意（UI 示例值，非真实监管趋势） */
   trendHint: number;
   icon: LucideIcon;
 }
