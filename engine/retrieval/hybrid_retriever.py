@@ -76,17 +76,18 @@ class HybridRetriever:
             self.rewriter.rewrite(query.query_text),
             self.risk_predictor.predict(query.query_text),
         )
-        # 中文标签关键词增强（对齐配套 27 类）；R00x 仅用于标签召回过滤
-        predicted_cn_tags = predict_cn_tags_by_keywords(query.query_text)
+        # 中文标签：控制数量，避免标签/BM25 通道被噪声淹没
+        predicted_cn_tags = predict_cn_tags_by_keywords(query.query_text, max_tags=3)
         if predicted_cn_tags:
             for cid in cn_tags_to_competition_ids(predicted_cn_tags):
                 if cid not in predicted_risk_ids:
                     predicted_risk_ids.append(cid)
+        predicted_risk_ids = list(dict.fromkeys(predicted_risk_ids))[:3]
 
-        # BM25 检索文本：改写结果 + 预测中文标签（提升口语→标签词命中）
+        # BM25：改写文本 + 至多 2 个中文标签（口语词→标签词桥接）
         bm25_text = rewritten_query
         if predicted_cn_tags:
-            bm25_text = f"{rewritten_query} {' '.join(predicted_cn_tags)}"
+            bm25_text = f"{rewritten_query} {' '.join(predicted_cn_tags[:2])}"
 
         # 2. 改写文本向量化（instruct 非对称编码 + Redis 缓存）
         query_embedding = await self.query_encoder.encode_query(rewritten_query)
@@ -115,10 +116,10 @@ class HybridRetriever:
         # 4. RRF 融合
         fused = reciprocal_rank_fusion(channel_results, top_k=self.fusion_size)
 
-        # 5. 精排（仅对 RRF Top-N 精排，控制 CPU 耗时；改写后文本作 query）
+        # 5. 精排：用原始口语 query（比法言法语改写更贴近营销话术）
         if query.use_reranker:
             candidates = fused[: self.rerank_candidates]
-            top = await self.reranker.rerank(rewritten_query, candidates, top_k=query.top_k)
+            top = await self.reranker.rerank(query.query_text, candidates, top_k=query.top_k)
         else:
             top = fused[: query.top_k]
 

@@ -12,7 +12,11 @@ import re
 from engine.classification.entity_normalizer import normalize_entity
 from engine.llm.client import DeepSeekClient, ThinkingMode
 from engine.llm.prompts import FIELD_REFINE_PROMPT
-from pipeline.extraction.regex_patterns import INSTITUTION_TYPE_RULES, PATTERNS
+from pipeline.extraction.regex_patterns import (
+    DOCNO_REGION_REGULATOR,
+    INSTITUTION_TYPE_RULES,
+    PATTERNS,
+)
 from pipeline.extraction.schema import ExtractedCase, FieldConfidence, InstitutionType
 from pipeline.parser.base import ParseResult
 
@@ -95,7 +99,25 @@ class ExtractorEngine:
             else:
                 case.field_confidences[field_name] = FieldConfidence.LOW.value
 
-        # 处罚机关：显式字段优先，正文兜底
+        if not case.party_name:
+            m = PATTERNS["party_name_alt"].search(text)
+            if m:
+                case.party_name = m.group(1).strip()
+                case.field_confidences["party_name"] = FieldConfidence.MEDIUM.value
+
+        if not case.violation_behavior:
+            m = PATTERNS["violation_behavior_alt"].search(text)
+            if m:
+                case.violation_behavior = m.group(1).strip()[:500]
+                case.field_confidences["violation_behavior"] = FieldConfidence.MEDIUM.value
+
+        if not case.penalty_content:
+            m = PATTERNS["penalty_content_alt"].search(text)
+            if m:
+                case.penalty_content = m.group(1).strip()
+                case.field_confidences["penalty_content"] = FieldConfidence.MEDIUM.value
+
+        # 处罚机关：显式字段 → 正文 → 文号地域兜底
         m = PATTERNS["regulator"].search(text)
         if m:
             case.regulator = m.group(1).strip()
@@ -105,13 +127,60 @@ class ExtractorEngine:
             if m:
                 case.regulator = m.group(1).strip()
                 case.field_confidences["regulator"] = FieldConfidence.MEDIUM.value
+            elif case.penalty_doc_no:
+                for region, name in DOCNO_REGION_REGULATOR.items():
+                    if case.penalty_doc_no.startswith(region):
+                        case.regulator = name
+                        case.field_confidences["regulator"] = FieldConfidence.LOW.value
+                        break
 
         m = PATTERNS["publish_date"].search(text)
         if m:
             case.publish_date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
             case.field_confidences["publish_date"] = FieldConfidence.MEDIUM.value
 
+        self._sanitize_fields(case)
         return case
+
+    @staticmethod
+    def _sanitize_fields(case: ExtractedCase) -> None:
+        """清洗当事人/机关噪声，对齐常见公示截断写法。"""
+        if case.party_name:
+            name = case.party_name.strip(" ：:\t")
+            # 金标常见截断：公司名(以下简称
+            m = re.search(r"^(.+?)\(以下简称", name)
+            if m:
+                name = m.group(1).rstrip() + "(以下简称"
+            else:
+                # 去掉尾部「告知了…」「行政处罚…」等粘连
+                name = re.split(
+                    r"(?:告知了|作出行政|行政处罚|强制执行|划款凭证|抄报我局)",
+                    name,
+                    maxsplit=1,
+                )[0].strip(" ，,、")
+            # 明显噪声：过短、或含非主体词
+            junk = ("名称的", "留待申请", "复印件", "强制执行")
+            if len(name) < 2 or any(j in name for j in junk):
+                case.party_name = ""
+                case.field_confidences["party_name"] = FieldConfidence.LOW.value
+            else:
+                case.party_name = name[:80]
+
+        if case.regulator:
+            reg = case.regulator.strip()
+            # 截到机关名为止，去掉「行政处罚决定…」尾巴
+            m = re.search(
+                r"^([\u4e00-\u9fff]{2,40}?(?:监管分局|监管局|银保监局|保监局|"
+                r"金融监督管理总局|银保监会|保监会))",
+                reg,
+            )
+            if m:
+                case.regulator = m.group(1)
+            else:
+                # 非法粘连（如含「申请行政复议」）则清空，留给文号兜底
+                if re.search(r"申请|复议|诉讼|强制执行|行政处罚决", reg):
+                    case.regulator = ""
+                    case.field_confidences["regulator"] = FieldConfidence.LOW.value
 
     # ---------- LLM 纠错 ----------
 
@@ -190,13 +259,14 @@ class ExtractorEngine:
         case.overall_confidence = round(min(max(score / total_w + method_adj, 0.05), 0.98), 3)
 
     def _infer_institution_type(self, case: ExtractedCase) -> None:
-        name = case.party_name
+        name = case.party_name or ""
+        blob = f"{name} {case.violation_behavior or ''}"
         entity = normalize_entity(name)
         if entity.entity_type == "责任人员":
             case.institution_type = InstitutionType.INSURANCE_AGENT
             return
         for pattern, type_name in INSTITUTION_TYPE_RULES:
-            if re.search(pattern, name):
+            if re.search(pattern, blob):
                 case.institution_type = InstitutionType(type_name)
                 return
         case.institution_type = InstitutionType.NON_INSURANCE

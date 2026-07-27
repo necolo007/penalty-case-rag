@@ -14,6 +14,18 @@ from engine.classification.competition_label_map import (
 def test_cn_tags_map_to_r_codes():
     assert cn_tags_to_competition_ids(["合同外利益", "赠送利益"]) == ["R002"]
     assert "R001" in cn_tags_to_competition_ids(["销售误导", "承诺收益"])
+    assert cn_tags_to_competition_ids(["虚列费用套取资金"]) == ["R005"]
+
+
+def test_compliance_tags_not_forced_to_r006():
+    """费率条款 / 客户信息不实 ≠ 编制虚假财务资料(R006)。"""
+    assert cn_tags_to_competition_ids(["未按规定使用费率条款"]) == []
+    assert cn_tags_to_competition_ids(["客户信息不真实"]) == []
+    mixed = cn_tags_to_competition_ids(
+        ["未按规定使用费率条款", "客户信息不真实", "虚列费用套取资金"]
+    )
+    assert mixed == ["R005"]
+    assert "R006" not in mixed
 
 
 def test_submission_risk_type_uses_cn_semicolon():

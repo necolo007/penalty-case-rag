@@ -1,15 +1,16 @@
 """多路候选合并去重 + RRF (Reciprocal Rank Fusion) 融合。
 
 RRF_score(d) = Σ_i weight_i / (k + rank_i(d))
+多通道命中额外加成，抑制单路噪声。
 """
 
 from engine.retrieval.base import SearchResult
 
 DEFAULT_CHANNEL_WEIGHTS = {
-    "bm25": 1.0,
-    "vector": 1.4,  # 营销话术↔法言法语主要靠语义
-    "tag": 1.1,     # 中文标签召回对齐赛题体系
-    "rule": 1.3,    # 词典命中为确定性映射，权重略高
+    "bm25": 1.15,
+    "vector": 1.45,  # 口语↔法言法语主要靠语义
+    "tag": 1.0,      # 标签收紧后恢复中等权重
+    "rule": 1.2,
 }
 
 
@@ -37,6 +38,12 @@ def reciprocal_rank_fusion(
                     existing.match_reason = result.match_reason
             else:
                 case_map[result.case_id] = result
+
+    # 多通道共识加成
+    for case_id, result in case_map.items():
+        n_ch = len(result.channels or [])
+        if n_ch >= 2:
+            scores[case_id] = scores.get(case_id, 0.0) + 0.08 * (n_ch - 1)
 
     sorted_ids = sorted(scores, key=lambda cid: scores[cid], reverse=True)[:top_k]
 

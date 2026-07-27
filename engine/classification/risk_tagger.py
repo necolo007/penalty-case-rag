@@ -1,4 +1,4 @@
-"""风险标签归类：三级词典规则 + 27 类中文词典增强 + LLM 兜底。"""
+"""风险标签归类：三级词典规则优先 + 高置信中文关键词补全 + LLM 兜底。"""
 
 import json
 import logging
@@ -56,20 +56,35 @@ class RiskTagger:
                 if iid in id_map:
                     display_tags.extend(id_map[iid]["display_tags"] or [])
 
-        cn_tags = predict_cn_tags_by_keywords(violation_behavior)
-        display_tags = normalize_cn_tags(list(display_tags) + cn_tags)
-        if cn_tags and method == "rule":
-            method = "rule+cn_dict"
+        # 中文词典：规则为空时补全；规则已有时仅补充未覆盖的细粒度标签（最多 2 个）
+        cn_tags = predict_cn_tags_by_keywords(violation_behavior, max_tags=3)
+        rule_tags = normalize_cn_tags(display_tags)
+        if not rule_tags:
+            display_tags = cn_tags
+            if cn_tags:
+                method = "cn_dict"
+        else:
+            extras = [t for t in cn_tags if t not in rule_tags][:2]
+            display_tags = rule_tags + extras
+            if extras:
+                method = "rule+cn_dict"
+            else:
+                display_tags = rule_tags
 
+        display_tags = normalize_cn_tags(display_tags)[:3]
         internal_ids = list(dict.fromkeys(internal_ids))[:5]
+        # R00x：以内部三级映射为主；中文关键词仅在标签很少时补充，降低假阳性
         competition_ids = list(dict.fromkeys(
-            [cid for cid in (map_internal_to_competition(i) for i in internal_ids) if cid]
-            + cn_tags_to_competition_ids(display_tags)
+            cid for cid in (map_internal_to_competition(i) for i in internal_ids) if cid
         ))
+        if len(competition_ids) < 2:
+            for cid in cn_tags_to_competition_ids(display_tags[:2]):
+                if cid not in competition_ids:
+                    competition_ids.append(cid)
         return {
             "internal_ids": internal_ids,
-            "competition_ids": competition_ids,
-            "display_tags": display_tags[:5],
+            "competition_ids": competition_ids[:3],
+            "display_tags": display_tags,
             "method": method,
         }
 

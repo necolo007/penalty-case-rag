@@ -50,14 +50,13 @@ class Reranker:
     @staticmethod
     def _case_text(result: SearchResult) -> str:
         parts = [
+            result.party_name,
             result.violation_behavior,
             result.penalty_content,
-            " ".join(result.risk_tags),
-            " ".join(result.risk_type_ids),
-            result.match_reason,
+            " ".join(result.risk_tags or []),
         ]
         text = " ".join(p for p in parts if p)
-        return text[:1500]
+        return text[:1200]
 
     async def rerank(self, query_text: str, candidates: list[SearchResult],
                      top_k: int = 10) -> list[SearchResult]:

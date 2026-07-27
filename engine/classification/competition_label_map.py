@@ -1,4 +1,11 @@
-"""27 类中文 risk_tag ↔ R001–R008；CSV 典型行为/排除边界参与关键词预测与消歧。"""
+"""27 类中文 risk_tag 与赛题 R001–R008 的映射（双层）。
+
+第一层（官方输出）：27 类中文细标签 —— 展示、提交、评测、训练。
+第二层（内部召回）：仅在语义确属赛题八大类时写入 R00x；无法对齐的细标签
+  （如费率条款合规、客户信息不实）不强制挂靠，避免污染标签通道。
+
+CSV 典型行为/排除边界参与关键词预测与消歧。
+"""
 
 from __future__ import annotations
 
@@ -64,9 +71,16 @@ CN_TAG_TO_COMPETITION: dict[str, str] = {
     "代理人管理不到位": "R004",
     "委托无资质机构销售": "R004",
     "虚列费用套取资金": "R005",
-    "未按规定使用费率条款": "R006",
-    "客户信息不真实": "R006",
+    # 产品合规 / 业务数据问题：不属于「编制虚假财务资料」(R006)，不强制映射官方八大类
+    "未按规定使用费率条款": "",
+    "客户信息不真实": "",
     "其他": "",
+}
+
+# 内部粗分桶（导航/统计用，非赛题官方 R00x）
+CN_TAG_INTERNAL_BUCKET: dict[str, str] = {
+    "未按规定使用费率条款": "产品合规",
+    "客户信息不真实": "业务数据不实",
 }
 
 COMPETITION_TO_CN_DEFAULT: dict[str, str] = {
@@ -75,7 +89,7 @@ COMPETITION_TO_CN_DEFAULT: dict[str, str] = {
     "R003": "虚假宣传",
     "R004": "代理人管理不到位",
     "R005": "虚列费用套取资金",
-    "R006": "虚列费用套取资金",
+    # R006 编制虚假财务资料：27 类无一一对应细标签，禁止默认落到「虚列费用」(R005)
     "R007": "其他",
     "R008": "其他",
 }
@@ -99,47 +113,54 @@ CN_TAG_ALIASES: dict[str, list[str]] = {
 
 CN_TAG_KEYWORDS: dict[str, list[str]] = {
     "合同外利益": [
-        "合同约定以外", "合同外利益", "赠送", "体检卡", "加油卡", "洗车券", "代金券", "油卡",
+        "合同约定以外", "合同外利益", "赠送体检卡", "赠送加油卡", "赠送洗车券",
+        "体检卡", "加油卡", "洗车券", "代金券", "油卡",
         "保费优惠", "首年.*折", "预交.*保费", "预缴.*保费",
     ],
-    "赠送利益": ["赠送礼品", "赠送服务", "免费领", "领取礼品", "体检卡", "加油卡", "洗车券"],
+    "赠送利益": ["赠送礼品", "赠送服务", "免费领", "领取礼品", "赠送油卡", "赠送代金券"],
     "回扣返佣": [
-        "返佣", "回扣", "返现", "预缴费打折", "缴费打折", "打折", "折扣",
-        r"\d折", "优惠活动",
+        "返佣", "回扣", "返现", "预缴费打折", "缴费打折", r"\d折",
     ],
     "销售误导": [
-        "销售误导", "误导性", "引人误解", "储蓄计划", "活期", "把钱从银行",
-        "利息.*倍", "像存款", "存钱",
+        "销售误导", "误导性", "引人误解", "储蓄计划", "把钱从银行",
+        "利息.*倍", "像存款",
     ],
-    "欺骗投保人": ["欺骗投保人", "虚假告知", "伪造", "变造"],
+    "欺骗投保人": ["欺骗投保人", "虚假告知"],
     "夸大收益": [
-        "夸大收益", "最高收益", "稳赚", "年化收益", "年化", "翻好几倍",
-        "利息马上", "撬动杠杆", "赚概率", "收益翻倍", "比存银行",
+        "夸大收益", "最高收益", "稳赚", "年化收益", "翻好几倍",
+        "收益翻倍", "比存银行",
     ],
-    "承诺收益": ["承诺收益", "保本保息", "保证回报", "保本", "保息", "固定收益", "一定赚钱", "买了肯定不亏"],
+    "承诺收益": ["承诺收益", "保本保息", "保证回报", "一定赚钱", "买了肯定不亏"],
     "保证收益": ["保证收益", "保证收益率", "稳赚不赔", "保证年化"],
     "弱化风险提示": [
-        "不用担心", "无风险", "零风险", "忽略风险", "弱化风险", "一定会赔",
-        "完全无风险", "比银行更安全", "免责.*不重要", "免责条款.*没事",
+        "不用担心", "无风险", "零风险", "弱化风险", "完全无风险",
+        "比银行更安全", "免责.*不重要",
     ],
-    "隐瞒重要信息": ["隐瞒", "未充分告知", "未披露", "未向投保人说明"],
+    "隐瞒重要信息": ["未充分告知", "未向投保人说明", "隐瞒与保险合同"],
     "虚构收益率": ["虚构收益", "编造收益", "伪造收益", "虚构分红"],
-    "绝对化表述": ["最好", "最优", "第一", "唯一", "行业领先"],
+    "绝对化表述": ["行业领先", "全国第一", "独一无二"],
     "虚假宣传": ["虚假宣传", "夸大宣传", "未经.*备案的宣传"],
     "产品说明会违规": ["产品说明会", "产说会"],
     "培训材料违规": ["培训材料", "培训话术", "培训PPT"],
     "电销违规": ["电销", "电话销售"],
-    "不当比较": ["不当对比", "与其他公司产品", "和银行", "比存款", "比理财更安全"],
-    "贬低竞品": ["贬低", "诋毁", "同业负面"],
-    "诱导投保": ["诱导投保", "不当手段", "限时抢购", "名额有限", "即将停售"],
+    "不当比较": ["不当对比", "比存款", "比理财更安全"],
+    "贬低竞品": ["贬低竞品", "诋毁同业", "同业负面"],
+    "诱导投保": ["诱导投保", "限时抢购", "名额有限", "即将停售"],
     "避债避税": ["避债", "避税", "规避债务", "收益免税"],
-    "回访违规": ["回访", "阻碍.*回访", "阻挠.*回访"],
+    "回访违规": ["阻碍.*回访", "阻挠.*回访", "回访过程中"],
     "虚列费用套取资金": ["虚列费用", "套取费用", "虚假列支", "虚挂中介"],
     "代理人管理不到位": ["代理人管理", "执业登记"],
     "委托无资质机构销售": ["无资质", "委托.*销售"],
     "未按规定使用费率条款": ["费率条款", "未按规定使用", "擅自变更.*条款"],
-    "客户信息不真实": ["客户信息不真实", "信息不真实", "回访记录造假", "代签"],
+    "客户信息不真实": ["客户信息不真实", "回访记录造假"],
 }
+
+# 过短/泛化词：禁止从典型行为自动并入
+_GENERIC_PHRASE_BLOCKLIST = frozenset({
+    "隐瞒", "伪造", "变造", "打折", "折扣", "最好", "最优", "第一", "唯一",
+    "年化", "保本", "保息", "存钱", "活期", "回访", "电销", "赠送", "优惠活动",
+    "不当手段", "虚假告知",
+})
 
 _DICT_PATH = Path(__file__).resolve().parents[2] / "data" / "dictionaries" / "risk_type_dictionary.csv"
 
@@ -156,23 +177,17 @@ def _row_field(row: dict[str, str], *keys: str) -> str:
 
 
 def _extract_phrases_from_typical(text: str) -> list[str]:
-    """从典型行为描述中抽取可匹配短语。"""
+    """仅抽取引号内高特异性短语，避免短句泛化导致假阳性。"""
     if not text:
         return []
     phrases: list[str] = []
     for q in _QUOTE_RE.findall(text):
         q = q.strip()
-        if 2 <= len(q) <= 24:
-            phrases.append(q)
-    for part in re.split(r"[；;。]", text):
-        part = part.strip().strip("。；;，,")
-        if not part:
+        if len(q) < 4 or q in _GENERIC_PHRASE_BLOCKLIST:
             continue
-        for chunk in re.split(r"[、，,（(]", part):
-            chunk = chunk.strip(" ）)」》\"'“”")
-            if 2 <= len(chunk) <= 16 and not chunk.startswith(("不包括", "区别于", "上位", "涵盖")):
-                phrases.append(chunk)
-    return list(dict.fromkeys(phrases))[:20]
+        if 4 <= len(q) <= 24:
+            phrases.append(q)
+    return list(dict.fromkeys(phrases))[:12]
 
 
 @lru_cache(maxsize=1)
@@ -212,18 +227,15 @@ def load_cn_tag_catalog() -> list[dict[str, str]]:
 
 @lru_cache(maxsize=1)
 def _merged_keyword_map() -> dict[str, list[str]]:
-    """硬编码关键词 ∪ CSV 典型行为抽取短语。"""
+    """硬编码关键词 ∪ CSV 引号短语。"""
     merged: dict[str, list[str]] = {k: list(v) for k, v in CN_TAG_KEYWORDS.items()}
     for row in load_cn_tag_catalog():
         tag = row["risk_tag"]
         if tag == "其他":
             continue
-        extra = _extract_phrases_from_typical(row.get("typical_behavior") or "")
-        if not extra:
-            continue
-        bucket = merged.setdefault(tag, [])
-        for phrase in extra:
-            if phrase not in bucket:
+        for phrase in _extract_phrases_from_typical(row.get("typical_behavior") or ""):
+            bucket = merged.setdefault(tag, [])
+            if phrase not in bucket and phrase not in _GENERIC_PHRASE_BLOCKLIST:
                 bucket.append(phrase)
     return merged
 
@@ -358,21 +370,29 @@ def _apply_exclusion_boundaries(text: str, hits: list[str]) -> list[str]:
     return result
 
 
-def predict_cn_tags_by_keywords(text: str) -> list[str]:
-    hits: list[str] = []
+def predict_cn_tags_by_keywords(text: str, *, max_tags: int = 3) -> list[str]:
+    """基于关键词词典初判中文风险标签；按命中词长度计分，优先细粒度标签。"""
+    scored: list[tuple[int, str]] = []
     for tag, keywords in _merged_keyword_map().items():
+        best = 0
         for kw in keywords:
             try:
-                if re.search(kw, text):
-                    hits.append(tag)
-                    break
+                m = re.search(kw, text)
+                hit = bool(m)
+                span = len(m.group(0)) if m else 0
             except re.error:
-                if kw in text:
-                    hits.append(tag)
-                    break
+                hit = kw in text
+                span = len(kw) if hit else 0
+            if hit:
+                best = max(best, span if span >= 2 else len(kw.replace(".*", "")))
+        if best > 0:
+            # 更长命中优先；同长度时细粒度标签名更长者优先
+            scored.append((best * 10 + min(len(tag), 9), tag))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    hits = [t for _, t in scored]
     hits = list(dict.fromkeys(hits))
     hits = _apply_exclusion_boundaries(text, hits)
-    return hits[:5]
+    return hits[:max_tags]
 
 
 def resolve_final_cn_tags(
