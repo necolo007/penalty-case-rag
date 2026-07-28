@@ -47,17 +47,27 @@ class RuleRetriever(BaseRetriever):
         filter_sql = build_filters(query, params)
         params.append(self.recall_size)
 
-        sql = f"""
-            SELECT {CASE_SELECT_FIELDS},
-                ts_rank(c.search_vector, plainto_tsquery('zhparser_config', $1)) AS score
-            FROM {CASE_FROM}
-            WHERE c.is_insurance_related = TRUE
-              AND c.search_vector @@ plainto_tsquery('zhparser_config', $1)
-              {filter_sql}
-            ORDER BY score DESC
-            LIMIT ${len(params)}
-        """
-        rows = await self.pool.fetch(sql, *params)
+        # 命中多个同义词时 standard_terms 会拼接多个不同标准表述，plainto_tsquery
+        # 的 AND 语义要求全部同时出现在同一文档，几乎必然为空；与 BM25 通道同样
+        # 先尝试 AND 精确匹配，为空再退化为 OR。
+        def _sql(tsquery_expr: str) -> str:
+            return f"""
+                SELECT {CASE_SELECT_FIELDS},
+                    ts_rank(c.search_vector, {tsquery_expr}) AS score
+                FROM {CASE_FROM}
+                WHERE c.is_insurance_related = TRUE
+                  AND c.search_vector @@ {tsquery_expr}
+                  {filter_sql}
+                ORDER BY score DESC
+                LIMIT ${len(params)}
+            """
+
+        rows = await self.pool.fetch(_sql("plainto_tsquery('zhparser_config', $1)"), *params)
+        if not rows:
+            rows = await self.pool.fetch(
+                _sql("replace(plainto_tsquery('zhparser_config', $1)::text, ' & ', ' | ')::tsquery"),
+                *params,
+            )
 
         # 全文未命中时，回退到同义词映射的风险类型过滤（保证规则通道有召回）
         if not rows and risk_ids:

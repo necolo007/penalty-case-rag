@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     RECALL_TAG: int = 80
     RECALL_RULE: int = 30
     RETRIEVAL_FUSION_SIZE: int = 100
-    RETRIEVAL_RERANK_CANDIDATES: int = 40
+    RETRIEVAL_RERANK_CANDIDATES: int = 60
     RRF_K: int = 60
     RRF_W_BM25: float = 1.15
     RRF_W_VECTOR: float = 1.45

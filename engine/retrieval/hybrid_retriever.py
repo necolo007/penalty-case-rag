@@ -55,7 +55,7 @@ class HybridRetriever:
         query_encoder: CachedQueryEncoder,
         reranker: Reranker,
         fusion_size: int = 100,
-        rerank_candidates: int = 40,
+        rerank_candidates: int = 60,
         channel_weights: dict[str, float] | None = None,
         rrf_k: int = 60,
         multi_channel_bonus: float = 0.08,
