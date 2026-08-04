@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 CORE_FIELDS = ["party_name", "violation_behavior", "penalty_content", "regulator"]
 DEFAULT_LLM_REFINE_THRESHOLD = 0.6
 
+# 无地区限定的顶层机关裸词：信息量低于带地区的具体机关名，即便字数更多也不应
+# 在候选择优时占先（见 _from_text 的 regulator 兜底逻辑）。
+_BARE_REGULATOR_NAMES = {"国家金融监督管理总局", "中国银保监会", "中国保监会"}
+
 
 def _matched_text(m: "re.Match") -> str:
     """兼容含多个可选捕获组（转折短语懒惰分支 / 定长兜底分支）的模式。"""
@@ -117,12 +121,14 @@ class ExtractorEngine:
         """
         if not text or not text.strip():
             return []
-        # 同一文号在正文中重复出现（页眉/页脚/多次引用）不代表多案例，需先去重
+        # 同一文号在正文中重复出现（页眉/页脚/多次引用）不代表多案例，需先去重。
+        # 标题常写成「重庆保监局渝保监罚〔2013〕46号」，正文为「渝保监罚〔2013〕46号」，
+        # 规范化到「关键词+年份+号」后再去重，避免误拆。
         docnos: list[re.Match] = []
         seen_no: set[str] = set()
         for m in PATTERNS["penalty_doc_no"].finditer(text):
-            key = re.sub(r"\s+", "", m.group(1))
-            if key in seen_no:
+            key = self._normalize_docno_key(m.group(1))
+            if not key or key in seen_no:
                 continue
             seen_no.add(key)
             docnos.append(m)
@@ -147,6 +153,17 @@ class ExtractorEngine:
             if len(segments) >= 2:
                 return segments
         return [text]
+
+    @staticmethod
+    def _normalize_docno_key(docno: str) -> str:
+        """文号去重键：去掉空白与机关前缀，保留「罚字类型+年份+序号」。"""
+        s = re.sub(r"\s+", "", docno or "")
+        m = re.search(
+            r"((?:金罚决字|罚决字|银保监罚决字|银保监罚|保监罚决字|保监罚|罚字)"
+            r"[〔\[（(]\d{4}[〕\]）)]\s*第?\s*\d+\s*号)",
+            s,
+        )
+        return re.sub(r"\s+", "", m.group(1)) if m else s
 
     @staticmethod
     def _build_evidence_snippet(text: str, max_chars: int = 1800) -> str:
@@ -186,7 +203,7 @@ class ExtractorEngine:
             raw_text_snippet=self._build_evidence_snippet(text),
         )
 
-        for field_name in ("penalty_doc_no", "party_name", "violation_behavior",
+        for field_name in ("penalty_doc_no", "violation_behavior",
                            "penalty_content", "fine_amount", "legal_basis"):
             m = PATTERNS[field_name].search(text)
             if m:
@@ -195,11 +212,9 @@ class ExtractorEngine:
             else:
                 case.field_confidences[field_name] = FieldConfidence.LOW.value
 
-        if not case.party_name:
-            m = PATTERNS["party_name_alt"].search(text)
-            if m:
-                case.party_name = m.group(1).strip()
-                case.field_confidences["party_name"] = FieldConfidence.MEDIUM.value
+        party, party_conf = self._extract_party_name(text)
+        case.party_name = party
+        case.field_confidences["party_name"] = party_conf
 
         if not case.violation_behavior:
             m = PATTERNS["violation_behavior_alt"].search(text)
@@ -219,9 +234,22 @@ class ExtractorEngine:
             case.regulator = m.group(1).strip()
             case.field_confidences["regulator"] = FieldConfidence.HIGH.value
         else:
-            m = PATTERNS["regulator_inline"].search(text)
-            if m:
-                case.regulator = m.group(1).strip()
+            # 决定书常见「地方局简称+文号(当事人)」的旧式标题写在文首，早于正文
+            # 抬头「中国XX监管会XX监管局行政处罚决定书」出现；若取首个命中（如
+            # 「重庆保监局」）会丢掉更完整的地区全称。改为收集全文所有候选，优先
+            # 挑「带地区」的具体机关名（而非仅"中国银保监会"这类无地区的裸词——
+            # 裸词虽字数多，但信息量反而不如短小的地区级机关名，纯比长度会选错，
+            # 例如误选申诉条款里提到的"国家金融监督管理总局"而非落款的"辽宁银保
+            # 监局"）；同一档位内再取更长、更靠后（落款通常在文末）的。
+            matches = list(PATTERNS["regulator_inline"].finditer(text))
+            if matches:
+                def _score(mm: "re.Match") -> tuple:
+                    text_ = mm.group(1)
+                    is_specific = text_ not in _BARE_REGULATOR_NAMES
+                    return (is_specific, len(text_), mm.start())
+
+                best = max(matches, key=_score)
+                case.regulator = best.group(1).strip()
                 case.field_confidences["regulator"] = FieldConfidence.MEDIUM.value
             elif case.penalty_doc_no:
                 for region, name in DOCNO_REGION_REGULATOR.items():
@@ -236,28 +264,126 @@ class ExtractorEngine:
             case.field_confidences["publish_date"] = FieldConfidence.MEDIUM.value
 
         self._sanitize_fields(case)
+        # sanitize 可能清空噪声当事人；此时再走一次兜底通道
+        if not case.party_name:
+            party, party_conf = self._extract_party_name(text, skip_label=True)
+            if party:
+                case.party_name = party
+                case.field_confidences["party_name"] = party_conf
+                self._sanitize_fields(case)
         return case
+
+    @classmethod
+    def _extract_party_name(
+        cls, text: str, *, skip_label: bool = False,
+    ) -> tuple[str, str]:
+        """抽取当事人：收集候选后优先机构主体，避免一案两罚时命中责任人姓名。"""
+        candidates: list[tuple[str, str, int]] = []  # (name, confidence, priority)
+
+        if not skip_label:
+            for m in PATTERNS["party_name"].finditer(text):
+                raw = (m.group(1) or "").strip()
+                cleaned = cls._clean_party_candidate(raw)
+                if cleaned and not cls._is_party_noise(cleaned):
+                    # 机构标签命中优先于后续人名标签
+                    pri = 3 if cls._looks_like_institution(cleaned) else 1
+                    candidates.append((cleaned, FieldConfidence.HIGH.value, pri))
+
+        for key, conf, pri_base in (
+            ("party_name_title", FieldConfidence.MEDIUM.value, 2),
+            ("party_name_alt", FieldConfidence.MEDIUM.value, 2),
+            ("party_name_header", FieldConfidence.MEDIUM.value, 2),
+        ):
+            m = PATTERNS[key].search(text)
+            if not m:
+                continue
+            cleaned = cls._clean_party_candidate(m.group(1))
+            if cleaned and not cls._is_party_noise(cleaned):
+                pri = pri_base + (1 if cls._looks_like_institution(cleaned) else 0)
+                candidates.append((cleaned, conf, pri))
+
+        if not candidates:
+            return "", FieldConfidence.LOW.value
+
+        # 去重保序后按 priority 选最优；同分时偏好更长的机构名
+        seen: set[str] = set()
+        uniq: list[tuple[str, str, int]] = []
+        for item in candidates:
+            if item[0] in seen:
+                continue
+            seen.add(item[0])
+            uniq.append(item)
+        uniq.sort(key=lambda x: (x[2], len(x[0]) if cls._looks_like_institution(x[0]) else 0), reverse=True)
+        return uniq[0][0], uniq[0][1]
+
+    @staticmethod
+    def _is_party_noise(name: str) -> bool:
+        """过滤表头残留/字段名误捕获。"""
+        noise = {
+            "个人姓名", "单位名称", "名称", "姓名", "当事人", "主要负责人",
+            "法定代表人", "负责人姓名", "营业地址", "住所",
+        }
+        if name in noise:
+            return True
+        if re.fullmatch(r"(?:个人|单位|机构)?(?:姓名|名称)", name):
+            return True
+        return False
+
+    @staticmethod
+    def _looks_like_institution(name: str) -> bool:
+        if re.search(
+            r"(?:公司|保险|人寿|财险|产险|经纪|代理|公估|支公司|分公司|"
+            r"中心支公司|营业部|服务部|电销中心)",
+            name,
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _clean_party_candidate(name: str) -> str:
+        """单条候选的轻量清洗（不含会清空字段的 junk 判定）。"""
+        name = name.strip(" ：:\t　")
+        # 「受处罚人名称:名称:XXX」或捕获组以「名称:」开头
+        name = re.sub(r"^(?:名称|姓名)\s*[：:]\s*", "", name)
+        # 标题括号捕获可能带上后续责任人「公司,张三」——只留机构段
+        if "，" in name or "," in name:
+            parts = re.split(r"[，,]", name, maxsplit=1)
+            if ExtractorEngine._looks_like_institution(parts[0]) and not ExtractorEngine._looks_like_institution(parts[1] if len(parts) > 1 else ""):
+                name = parts[0].strip()
+        # 补全/截断括注：保留完整「(以下简称XX)」，缺右括号则截到「以下简称」
+        m = re.search(r"^(.+?[（(]以下简称[^）)]*[）)])", name)
+        if m:
+            name = m.group(1)
+        else:
+            m = re.search(r"^(.+?[（(]以下简称)", name)
+            if m and not re.search(r"[）)]", name[m.end():m.end() + 40]):
+                # 金标常见截断到「(以下简称」；若原文本身缺右括号也按此收束
+                name = m.group(1)
+            else:
+                name = re.split(
+                    r"(?:告知了|作出行政|行政处罚|强制执行|划款凭证|抄报我局|"
+                    r"营业地址|住\s*所|地址|身份证号|职务)",
+                    name,
+                    maxsplit=1,
+                )[0].strip(" ，,、")
+        # 去掉未闭合的多余右括号（如标题截取残留）
+        if name.count(")") + name.count("）") > name.count("(") + name.count("（"):
+            name = re.sub(r"[）)]\s*$", "", name).strip()
+        return name.strip()[:80]
 
     @staticmethod
     def _sanitize_fields(case: ExtractedCase) -> None:
         """清洗当事人/机关噪声，对齐常见公示截断写法。"""
         if case.party_name:
-            name = case.party_name.strip(" ：:\t")
-            # 金标常见写法：公司名(以下简称XX) —— 需保留完整括注，
-            # 之前只截到「(以下简称」四字、丢掉简称与右括号，导致必然不等。
-            m = re.search(r"^(.+?[（(]以下简称[^）)]*[）)])", name)
-            if m:
-                name = m.group(1)
-            else:
-                # 去掉尾部「告知了…」「行政处罚…」等粘连
-                name = re.split(
-                    r"(?:告知了|作出行政|行政处罚|强制执行|划款凭证|抄报我局)",
-                    name,
-                    maxsplit=1,
-                )[0].strip(" ，,、")
-            # 明显噪声：过短、或含非主体词
-            junk = ("名称的", "留待申请", "复印件", "强制执行")
-            if len(name) < 2 or any(j in name for j in junk):
+            name = ExtractorEngine._clean_party_candidate(case.party_name)
+            # 明显噪声：过短、或含非主体词、或仍以标签残留开头
+            junk = ("名称的", "留待申请", "复印件", "强制执行", "划款凭证",
+                    "付款凭证", "加处罚款", "申请行政复议", "违法行为")
+            if (
+                len(name) < 2
+                or any(j in name for j in junk)
+                or name in ("名称", "姓名", "当事人")
+            ):
                 case.party_name = ""
                 case.field_confidences["party_name"] = FieldConfidence.LOW.value
             else:
@@ -266,13 +392,19 @@ class ExtractorEngine:
         if case.regulator:
             reg = case.regulator.strip()
             # 截到机关名为止，去掉「行政处罚决定…」尾巴。
-            # 「金融监督管理总局」后常跟地区+「监管局/监管分局」（2023 新称谓），
-            # 该分支必须放在前面，否则懒惰量词会在「总局」处过早停止，丢掉地区部分。
+            # 「金融监督管理总局/银保监会/保监会」后常跟地区+「监管局/监管分局」，
+            # 这些带地区的分支必须排在裸词分支之前——否则懒惰量词一遇到「银保监
+            # 会/保监会」这类短别名就会立即成功匹配并提前截断，丢掉后面的地区部分
+            # （例如「中国银保监会宜昌监管分局」被截断成「中国银保监会」）。
             m = re.search(
                 r"^([\u4e00-\u9fff]{2,40}?(?:"
                 r"金融监督管理总局[\u4e00-\u9fff]{0,10}监管分局"
                 r"|金融监督管理总局[\u4e00-\u9fff]{0,10}监管局"
                 r"|金融监督管理总局"
+                r"|银保监会[\u4e00-\u9fff]{0,10}监管分局"
+                r"|银保监会[\u4e00-\u9fff]{0,10}监管局"
+                r"|保监会[\u4e00-\u9fff]{0,10}监管分局"
+                r"|保监会[\u4e00-\u9fff]{0,10}监管局"
                 r"|监管分局|监管局|银保监局|保监局|银保监会|保监会"
                 r"))",
                 reg,

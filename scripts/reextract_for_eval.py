@@ -1,5 +1,13 @@
 """从金标 raw_text 规则重抽，产出 extracted_cases.jsonl（任务1前置）。
 
+评测口径修正（六次优化）：不再对每条金标行只选「一条最优」候选并强占金标
+case_id——这会在一份文书含多个当事人/多次处罚（一案两罚）时，把两条金标
+都拿去和同一条预测比较，无法真实反映多案例拆分质量。
+
+新做法：按 file_id 去重后，对每个原始文档只跑一次 extract()，把该文档
+产出的**全部**候选案例原样落盘（不裁剪、不绑定金标 case_id），由
+eval_extraction.py 按 file_id 做二分图匹配后再计算 P/R/F1。
+
 用法：python scripts/reextract_for_eval.py [--limit 100]
 """
 
@@ -41,19 +49,28 @@ def _resolve_raw_text(file_id: str, dirs: list[Path]) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="金标 raw_text 规则重抽")
+    parser = argparse.ArgumentParser(description="金标 raw_text 规则重抽（按 file_id 输出全部候选案例）")
     parser.add_argument("--gold", default="data/eval/gold_extraction_cases.jsonl")
     parser.add_argument("--output", default="data/eval/extracted_cases.jsonl")
-    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--limit", type=int, default=None, help="限制 file_id 数量（非金标行数）")
     args = parser.parse_args()
 
     settings = get_settings()
     gold_path = Path(args.gold)
     if not gold_path.is_absolute():
         gold_path = _ROOT / gold_path
-    rows = _load_jsonl(gold_path)
+    gold_rows = _load_jsonl(gold_path)
+
+    # 一份文书可能对应多条金标（一案两罚），按 file_id 去重后只抽取一次。
+    file_ids: list[str] = []
+    seen_fid: set[str] = set()
+    for item in gold_rows:
+        fid = item.get("file_id") or ""
+        if fid and fid not in seen_fid:
+            seen_fid.add(fid)
+            file_ids.append(fid)
     if args.limit:
-        rows = rows[: args.limit]
+        file_ids = file_ids[: args.limit]
 
     raw_dirs = [
         _ROOT / settings.DATA_DIR / "raw_text",
@@ -69,9 +86,7 @@ def main() -> None:
 
     written = missing = 0
     with out_path.open("w", encoding="utf-8") as f:
-        for item in rows:
-            file_id = item.get("file_id") or ""
-            case_id = item.get("case_id") or ""
+        for file_id in file_ids:
             text = _resolve_raw_text(file_id, raw_dirs)
             if not text.strip():
                 missing += 1
@@ -81,26 +96,27 @@ def main() -> None:
             if not cases:
                 missing += 1
                 continue
-            case = cases[0]
-            score = filt.score(case.party_name, case.violation_behavior, case.legal_basis)
-            cand, _ = filt.is_candidate(case.party_name, case.violation_behavior, case.legal_basis)
-            inst = case.institution_type
-            inst_val = inst.value if hasattr(inst, "value") else str(inst)
-            row = {
-                "case_id": case_id,
-                "file_id": file_id,
-                "party_name": case.party_name,
-                "penalty_doc_no": case.penalty_doc_no,
-                "violation_behavior": case.violation_behavior,
-                "penalty_content": case.penalty_content,
-                "regulator": case.regulator,
-                "institution_type": inst_val,
-                "is_insurance_related": bool(score.is_insurance or cand),
-            }
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-            written += 1
+            for idx, case in enumerate(cases):
+                score = filt.score(case.party_name, case.violation_behavior, case.legal_basis)
+                cand, _ = filt.is_candidate(case.party_name, case.violation_behavior, case.legal_basis)
+                inst = case.institution_type
+                inst_val = inst.value if hasattr(inst, "value") else str(inst)
+                row = {
+                    "file_id": file_id,
+                    "pred_idx": idx,
+                    "party_name": case.party_name,
+                    "penalty_doc_no": case.penalty_doc_no,
+                    "violation_behavior": case.violation_behavior,
+                    "penalty_content": case.penalty_content,
+                    "regulator": case.regulator,
+                    "institution_type": inst_val,
+                    "overall_confidence": case.overall_confidence,
+                    "is_insurance_related": bool(score.is_insurance or cand),
+                }
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                written += 1
 
-    print(f"Wrote {written} extracted cases → {out_path} (missing_raw={missing})")
+    print(f"Wrote {written} extracted cases from {len(file_ids)} files → {out_path} (missing_raw={missing})")
 
 
 if __name__ == "__main__":

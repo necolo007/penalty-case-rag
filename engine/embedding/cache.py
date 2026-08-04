@@ -18,7 +18,11 @@ class CachedQueryEncoder:
         self.ttl = ttl
 
     def _key(self, text: str) -> str:
-        digest = hashlib.sha256(f"{self.provider.model_name}:{text}".encode()).hexdigest()
+        # instruct 纳入 key：EMBEDDING_INSTRUCT 调整/重启后若沿用旧 key，会在 TTL
+        # 内静默返回按旧 instruct 编码的向量（同一 query 文本命中同一 key），
+        # 造成配置生效但检索结果未变的隐蔽 Bug。
+        instruct = getattr(self.provider, "instruct", "")
+        digest = hashlib.sha256(f"{self.provider.model_name}:{instruct}:{text}".encode()).hexdigest()
         return f"qemb:{digest}"
 
     async def encode_query(self, text: str) -> list[float]:
