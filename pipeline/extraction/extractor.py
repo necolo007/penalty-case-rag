@@ -19,6 +19,7 @@ from pipeline.extraction.regex_patterns import (
 )
 from pipeline.extraction.schema import ExtractedCase, FieldConfidence, InstitutionType
 from pipeline.parser.base import ParseResult
+from pipeline.parser.ocr_normalize import normalize_ocr_text
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,10 @@ class ExtractorEngine:
                 for r in records
             ]
         else:
+            # 扫描 OCR 兜底：逐字重复等噪声先归一再切分/抽取
+            text = normalize_ocr_text(parse_result.markdown)
+            if text != parse_result.markdown:
+                parse_result.markdown = text
             # 路径②：长文本 → 按文号/当事人切分多案例后分别抽取
             segments = self._split_case_segments(parse_result.markdown)
             cases = []
@@ -284,6 +289,7 @@ class ExtractorEngine:
             for m in PATTERNS["party_name"].finditer(text):
                 raw = (m.group(1) or "").strip()
                 cleaned = cls._clean_party_candidate(raw)
+                cleaned = cls._extend_party_across_linebreak(cleaned, text)
                 if cleaned and not cls._is_party_noise(cleaned):
                     # 机构标签命中优先于后续人名标签
                     pri = 3 if cls._looks_like_institution(cleaned) else 1
@@ -298,6 +304,7 @@ class ExtractorEngine:
             if not m:
                 continue
             cleaned = cls._clean_party_candidate(m.group(1))
+            cleaned = cls._extend_party_across_linebreak(cleaned, text)
             if cleaned and not cls._is_party_noise(cleaned):
                 pri = pri_base + (1 if cls._looks_like_institution(cleaned) else 0)
                 candidates.append((cleaned, conf, pri))
@@ -315,6 +322,44 @@ class ExtractorEngine:
             uniq.append(item)
         uniq.sort(key=lambda x: (x[2], len(x[0]) if cls._looks_like_institution(x[0]) else 0), reverse=True)
         return uniq[0][0], uniq[0][1]
+
+    @staticmethod
+    def _extend_party_across_linebreak(name: str, text: str) -> str:
+        """跨断行拼接被截断的当事人名称。
+
+        PDF/OCR 版面常在机构名或人名括注中间断行（版面宽度限制，非语义
+        断句），而当事人相关正则的字符类都排除了 `\\n` 以避免吞并下一
+        标签整段内容。此处针对两类高置信度截断场景做保守的单次跨行拼接：
+          ① 机构名候选恰好在断行处结束（如"...潍坊市\\n奎文支公司"）；
+          ② 人名括注含未闭合左括号（如"张三（时任XX公司\\n分公司经理）"）。
+        """
+        if not name:
+            return name
+        idx = text.find(name)
+        if idx == -1:
+            return name
+        end = idx + len(name)
+        if end >= len(text) or text[end] != "\n":
+            return name
+        rest = text[end + 1:end + 61]
+        stop_markers = ("当事人", "住所", "地址", "身份证", "职务：", "统一社会信用代码",
+                        "案由", "主要违法", "违法事实", "违法行为", "\n", "：", ":")
+        cut = len(rest)
+        for marker in stop_markers:
+            p = rest.find(marker)
+            if p != -1:
+                cut = min(cut, p)
+        continuation = rest[:cut]
+        if not continuation or not re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9（）()]{1,50}", continuation):
+            return name
+        open_parens = name.count("（") + name.count("(")
+        close_parens = name.count("）") + name.count(")")
+        if open_parens > close_parens:
+            m = re.search(r"^([\u4e00-\u9fffA-Za-z0-9]{1,50}?[）)])", continuation)
+            return name + m.group(1) if m else name
+        if re.search(r"(?:公司|支公司|分公司|中心支公司|营业部|服务部|电销中心)$", continuation):
+            return name + continuation
+        return name
 
     @staticmethod
     def _is_party_noise(name: str) -> bool:

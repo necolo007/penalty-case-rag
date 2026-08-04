@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useEffect, type FormEvent } from "react";
 import {
   ArrowDownWideNarrow,
   Download,
@@ -7,166 +7,48 @@ import {
   Table2,
 } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, ApiError } from "../api/client";
-import type { CaseListItem, Paginated } from "../api/types";
 import { CaseCard } from "../components/CaseCard";
 import { ConfidenceBar } from "../components/ConfidenceBar";
 import { RiskTypeChip } from "../components/RiskTypeChip";
 import { EmptyState, ErrorAlert, LoadingBlock } from "../components/ui";
 import { CN_TAG_NAMES } from "../lib/cnRiskTags";
+import {
+  casesSession,
+  useCasesSession,
+  type CasesSortBy,
+} from "../lib/casesSession";
 import { formatDate, truncate } from "../lib/format";
 
-type ViewMode = "table" | "card";
-type SortBy = "publish_date" | "fine_amount" | "overall_confidence" | "party_name";
-
 export function CasesPage() {
+  const s = useCasesSession();
   const [searchParams] = useSearchParams();
-  const initialRisk = searchParams.get("risk_type") ?? "";
-  const [keyword, setKeyword] = useState("");
-  const [regulator, setRegulator] = useState("");
-  const [riskType, setRiskType] = useState(initialRisk);
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [insuranceOnly, setInsuranceOnly] = useState(true);
-  const [viewMode, setViewMode] = useState<ViewMode>("table");
-  const [sortBy, setSortBy] = useState<SortBy>("publish_date");
-  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
-  const [page, setPage] = useState(1);
-  const [data, setData] = useState<Paginated<CaseListItem> | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [exporting, setExporting] = useState(false);
-
-  const filterParams = useCallback(
-    (p: number) => ({
-      page: p,
-      page_size: viewMode === "table" ? 20 : 12,
-      keyword: keyword.trim() || undefined,
-      regulator: regulator.trim() || undefined,
-      risk_type: riskType.trim() || undefined,
-      is_insurance_related: insuranceOnly ? true : undefined,
-      date_from: dateFrom || undefined,
-      date_to: dateTo || undefined,
-      sort_by: sortBy,
-      sort_order: sortOrder,
-    }),
-    [keyword, regulator, riskType, insuranceOnly, dateFrom, dateTo, sortBy, sortOrder, viewMode],
-  );
-
-  const load = useCallback(
-    async (p: number, overrides?: Partial<ReturnType<typeof filterParams>>) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const params = { ...filterParams(p), ...overrides };
-        const res = await api.listCases(params);
-        setData(res);
-        setPage(p);
-        setSelected(new Set());
-      } catch (err) {
-        setError(err instanceof ApiError ? err.message : "加载案例失败");
-      } finally {
-        setLoading(false);
-      }
-    },
-    [filterParams],
-  );
 
   useEffect(() => {
-    const fromUrl = searchParams.get("risk_type") ?? "";
-    setRiskType(fromUrl);
-    void load(1, {
-      keyword: undefined,
-      regulator: undefined,
-      risk_type: fromUrl || undefined,
-      is_insurance_related: true,
-      date_from: undefined,
-      date_to: undefined,
-      page: 1,
-      page_size: 20,
-      sort_by: "publish_date",
-      sort_order: "desc",
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    casesSession.ensureLoaded(searchParams.get("risk_type"));
   }, [searchParams]);
 
   function onFilter(e: FormEvent) {
     e.preventDefault();
-    void load(1);
+    void casesSession.load(1);
   }
 
-  function toggleSort(col: SortBy) {
-    const nextOrder =
-      sortBy === col ? (sortOrder === "desc" ? "asc" : "desc") : col === "party_name" ? "asc" : "desc";
-    setSortBy(col);
-    setSortOrder(nextOrder);
-    void load(1, { sort_by: col, sort_order: nextOrder, page: 1 });
-  }
-
-  function switchView(mode: ViewMode) {
-    if (mode === viewMode) return;
-    setViewMode(mode);
-    void load(1, { page: 1, page_size: mode === "table" ? 20 : 12 });
-  }
-
-  function toggleOne(id: string) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  function toggleAll() {
-    if (!data) return;
-    const ids = data.items.map((i) => i.case_id);
-    const allSelected = ids.length > 0 && ids.every((id) => selected.has(id));
-    setSelected(allSelected ? new Set() : new Set(ids));
-  }
-
-  async function onExport(format: "csv" | "xlsx") {
-    setExporting(true);
-    setError(null);
-    try {
-      await api.exportCasesTable(
-        {
-          keyword: keyword.trim() || undefined,
-          regulator: regulator.trim() || undefined,
-          risk_type: riskType.trim() || undefined,
-          is_insurance_related: insuranceOnly ? true : undefined,
-          date_from: dateFrom || undefined,
-          date_to: dateTo || undefined,
-          sort_by: sortBy,
-          sort_order: sortOrder,
-          case_ids: selected.size ? Array.from(selected).join(",") : undefined,
-        },
-        format,
-      );
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "导出失败");
-    } finally {
-      setExporting(false);
-    }
-  }
-
-  const totalPages = data ? Math.max(1, Math.ceil(data.total / data.page_size)) : 1;
-  const pageIds = data?.items.map((i) => i.case_id) ?? [];
-  const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
+  const totalPages = s.data ? Math.max(1, Math.ceil(s.data.total / s.data.page_size)) : 1;
+  const pageIds = s.data?.items.map((i) => i.case_id) ?? [];
+  const selectedSet = new Set(s.selected);
+  const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedSet.has(id));
 
   function SortHeader({
     col,
     label,
   }: {
-    col: SortBy;
+    col: CasesSortBy;
     label: string;
   }) {
-    const active = sortBy === col;
+    const active = s.sortBy === col;
     return (
       <button
         type="button"
-        onClick={() => toggleSort(col)}
+        onClick={() => casesSession.toggleSort(col)}
         className="inline-flex items-center gap-1 font-semibold hover:text-foreground"
       >
         {label}
@@ -174,12 +56,12 @@ export function CasesPage() {
           className={[
             "h-3.5 w-3.5 transition",
             active ? "text-primary opacity-100" : "opacity-30",
-            active && sortOrder === "asc" ? "rotate-180" : "",
+            active && s.sortOrder === "asc" ? "rotate-180" : "",
           ].join(" ")}
           aria-hidden
         />
         <span className="sr-only">
-          {active ? (sortOrder === "desc" ? "降序" : "升序") : "排序"}
+          {active ? (s.sortOrder === "desc" ? "降序" : "升序") : "排序"}
         </span>
       </button>
     );
@@ -198,11 +80,11 @@ export function CasesPage() {
           <div className="inline-flex rounded-xl border border-border bg-white p-1" role="group" aria-label="视图切换">
             <button
               type="button"
-              aria-pressed={viewMode === "table"}
-              onClick={() => switchView("table")}
+              aria-pressed={s.viewMode === "table"}
+              onClick={() => casesSession.switchView("table")}
               className={[
                 "inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold transition",
-                viewMode === "table" ? "bg-primary text-white" : "text-muted-fg hover:text-foreground",
+                s.viewMode === "table" ? "bg-primary text-white" : "text-muted-fg hover:text-foreground",
               ].join(" ")}
             >
               <Table2 className="h-4 w-4" />
@@ -210,11 +92,11 @@ export function CasesPage() {
             </button>
             <button
               type="button"
-              aria-pressed={viewMode === "card"}
-              onClick={() => switchView("card")}
+              aria-pressed={s.viewMode === "card"}
+              onClick={() => casesSession.switchView("card")}
               className={[
                 "inline-flex min-h-11 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold transition",
-                viewMode === "card" ? "bg-primary text-white" : "text-muted-fg hover:text-foreground",
+                s.viewMode === "card" ? "bg-primary text-white" : "text-muted-fg hover:text-foreground",
               ].join(" ")}
             >
               <LayoutGrid className="h-4 w-4" />
@@ -223,21 +105,21 @@ export function CasesPage() {
           </div>
           <button
             type="button"
-            disabled={exporting}
-            onClick={() => void onExport("csv")}
+            disabled={s.exporting}
+            onClick={() => void casesSession.exportTable("csv")}
             className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-white px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
           >
             <Download className="h-4 w-4" />
-            {selected.size ? `导出 CSV（${selected.size}）` : "导出 CSV"}
+            {s.selected.length ? `导出 CSV（${s.selected.length}）` : "导出 CSV"}
           </button>
           <button
             type="button"
-            disabled={exporting}
-            onClick={() => void onExport("xlsx")}
+            disabled={s.exporting}
+            onClick={() => void casesSession.exportTable("xlsx")}
             className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-primary px-3 text-sm font-semibold text-white hover:bg-primary-deep disabled:opacity-50"
           >
             <Download className="h-4 w-4" />
-            {selected.size ? `导出 Excel（${selected.size}）` : "导出 Excel"}
+            {s.selected.length ? `导出 Excel（${s.selected.length}）` : "导出 Excel"}
           </button>
         </div>
       </header>
@@ -254,8 +136,8 @@ export function CasesPage() {
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-fg" />
             <input
               id="kw"
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
+              value={s.keyword}
+              onChange={(e) => casesSession.setKeyword(e.target.value)}
               className="min-h-11 w-full rounded-xl border border-border bg-white pl-9 pr-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
               placeholder="违规行为全文检索"
             />
@@ -267,8 +149,8 @@ export function CasesPage() {
           </label>
           <select
             id="rt"
-            value={riskType}
-            onChange={(e) => setRiskType(e.target.value)}
+            value={s.riskType}
+            onChange={(e) => casesSession.setRiskType(e.target.value)}
             className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
           >
             <option value="">全部</option>
@@ -285,8 +167,8 @@ export function CasesPage() {
           </label>
           <input
             id="reg"
-            value={regulator}
-            onChange={(e) => setRegulator(e.target.value)}
+            value={s.regulator}
+            onChange={(e) => casesSession.setRegulator(e.target.value)}
             className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
           />
         </div>
@@ -297,8 +179,8 @@ export function CasesPage() {
           <input
             id="df"
             type="date"
-            value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
+            value={s.dateFrom}
+            onChange={(e) => casesSession.setDateFrom(e.target.value)}
             className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
           />
         </div>
@@ -309,16 +191,16 @@ export function CasesPage() {
           <input
             id="dt"
             type="date"
-            value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
+            value={s.dateTo}
+            onChange={(e) => casesSession.setDateTo(e.target.value)}
             className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
           />
         </div>
         <label className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-white px-3 text-sm">
           <input
             type="checkbox"
-            checked={insuranceOnly}
-            onChange={(e) => setInsuranceOnly(e.target.checked)}
+            checked={s.insuranceOnly}
+            onChange={(e) => casesSession.setInsuranceOnly(e.target.checked)}
             className="accent-primary"
           />
           仅保险相关
@@ -331,23 +213,23 @@ export function CasesPage() {
         </button>
       </form>
 
-      {error ? <ErrorAlert message={error} /> : null}
-      {loading ? <LoadingBlock /> : null}
+      {s.error ? <ErrorAlert message={s.error} /> : null}
+      {s.loading ? <LoadingBlock /> : null}
 
-      {!loading && data && data.items.length === 0 ? (
+      {!s.loading && s.data && s.data.items.length === 0 ? (
         <EmptyState title="没有匹配的案例" description="调整筛选条件后再试。" />
       ) : null}
 
-      {!loading && data && data.items.length > 0 ? (
+      {!s.loading && s.data && s.data.items.length > 0 ? (
         <>
           <p className="text-sm text-muted-fg">
-            共 {data.total} 条 · 第 {data.page}/{totalPages} 页
-            {selected.size ? ` · 已选 ${selected.size} 条` : ""}
+            共 {s.data.total} 条 · 第 {s.data.page}/{totalPages} 页
+            {s.selected.length ? ` · 已选 ${s.selected.length} 条` : ""}
           </p>
 
-          {viewMode === "card" ? (
+          {s.viewMode === "card" ? (
             <div className="stagger grid gap-4 lg:grid-cols-2">
-              {data.items.map((item) => (
+              {s.data.items.map((item) => (
                 <CaseCard key={item.case_id} item={item} />
               ))}
             </div>
@@ -360,7 +242,7 @@ export function CasesPage() {
                       <input
                         type="checkbox"
                         checked={allPageSelected}
-                        onChange={toggleAll}
+                        onChange={() => casesSession.toggleAllPage()}
                         aria-label="全选本页"
                         className="accent-primary"
                       />
@@ -383,7 +265,7 @@ export function CasesPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.items.map((item) => {
+                  {s.data.items.map((item) => {
                     const tags =
                       item.risk_tags?.length
                         ? item.risk_tags
@@ -396,8 +278,8 @@ export function CasesPage() {
                         <td className="px-3 py-3">
                           <input
                             type="checkbox"
-                            checked={selected.has(item.case_id)}
-                            onChange={() => toggleOne(item.case_id)}
+                            checked={selectedSet.has(item.case_id)}
+                            onChange={() => casesSession.toggleOne(item.case_id)}
                             aria-label={`选择 ${item.party_name || item.case_id}`}
                             className="accent-primary"
                           />
@@ -454,16 +336,16 @@ export function CasesPage() {
           <div className="flex items-center justify-center gap-3">
             <button
               type="button"
-              disabled={page <= 1}
-              onClick={() => void load(page - 1)}
+              disabled={s.page <= 1}
+              onClick={() => void casesSession.load(s.page - 1)}
               className="min-h-11 rounded-xl border border-border bg-white px-4 text-sm disabled:opacity-40"
             >
               上一页
             </button>
             <button
               type="button"
-              disabled={page >= totalPages}
-              onClick={() => void load(page + 1)}
+              disabled={s.page >= totalPages}
+              onClick={() => void casesSession.load(s.page + 1)}
               className="min-h-11 rounded-xl border border-border bg-white px-4 text-sm disabled:opacity-40"
             >
               下一页

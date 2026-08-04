@@ -1,502 +1,383 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { ArrowRight, Scale, Search } from "lucide-react";
+import type { StatsResponse } from "../api/types";
 import {
-  ArrowRight,
-  Search,
-  ShieldCheck,
-  TrendingDown,
-  TrendingUp,
-} from "lucide-react";
-import { api } from "../api/client";
-import type { CaseListItem } from "../api/types";
-import { RISK_ATLAS, heatTone, type RiskMeta } from "../lib/riskAtlas";
+  RISK_ATLAS,
+  RISK_NAME_MAP,
+  categoryToneClass,
+  type RiskMeta,
+} from "../lib/riskAtlas";
 
-type TimeRange = "30d" | "180d" | "365d" | "all";
-type MetricMode = "count" | "growth" | "share";
-
-const TIME_OPTIONS: { id: TimeRange; label: string }[] = [
-  { id: "30d", label: "近30天" },
-  { id: "180d", label: "近半年" },
-  { id: "365d", label: "近一年" },
-  { id: "all", label: "全部" },
-];
-
-const METRIC_OPTIONS: { id: MetricMode; label: string }[] = [
-  { id: "count", label: "案例数量" },
-  { id: "growth", label: "近期增幅" },
-  { id: "share", label: "高风险占比" },
-];
+type TagTreeNode = NonNullable<StatsResponse["tag_tree"]>[number];
 
 type Props = {
   distribution: Record<string, number>;
+  tagTree?: StatsResponse["tag_tree"];
+  insuranceCases?: number | null;
+  pendingReviewCount?: number | null;
+  tagCoverageRate?: number | null;
+  entityNormalizeRate?: number | null;
 };
 
-export function RiskAtlasPanel({ distribution }: Props) {
-  const items = useMemo(() => {
-    return RISK_ATLAS.map((meta) => ({
-      meta,
-      count: distribution[meta.id] ?? 0,
-    }))
-      .filter((x) => x.count > 0 || Object.keys(distribution).length === 0)
-      .sort((a, b) => b.count - a.count);
-  }, [distribution]);
+function formatRate(rate: number | null | undefined): string {
+  if (rate == null || Number.isNaN(rate)) return "—";
+  return `${(rate * 100).toFixed(1)}%`;
+}
 
-  const displayItems = items.length
-    ? items
-    : RISK_ATLAS.map((meta) => ({ meta, count: 0 }));
+function formatCount(n: number | null | undefined): string {
+  if (n == null) return "—";
+  return n.toLocaleString("zh-CN");
+}
 
-  const maxCount = Math.max(1, ...displayItems.map((i) => i.count));
-  const total = displayItems.reduce((s, i) => s + i.count, 0) || 1;
+export function RiskAtlasPanel({
+  distribution,
+  tagTree = [],
+  insuranceCases,
+  pendingReviewCount,
+  tagCoverageRate,
+  entityNormalizeRate,
+}: Props) {
+  const hasRealCounts = Object.values(distribution).some((c) => c > 0)
+    || (tagTree?.some((t) => t.case_count > 0) ?? false);
 
-  const defaultId =
-    displayItems.find((i) => i.meta.id === "R001")?.meta.id ||
-    displayItems.find((i) => i.meta.id === "R002")?.meta.id ||
-    displayItems[0]?.meta.id ||
-    "R001";
-
-  const [selectedId, setSelectedId] = useState(defaultId);
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const [timeRange, setTimeRange] = useState<TimeRange>("365d");
-  const [metric, setMetric] = useState<MetricMode>("count");
-  const [cases, setCases] = useState<CaseListItem[]>([]);
-  const [loadingCases, setLoadingCases] = useState(false);
-
-  useEffect(() => {
-    if (!displayItems.some((i) => i.meta.id === selectedId) && displayItems[0]) {
-      setSelectedId(displayItems[0].meta.id);
-    }
-  }, [displayItems, selectedId]);
-
-  const selected = displayItems.find((i) => i.meta.id === selectedId) ?? displayItems[0];
-  const selectedMeta = selected?.meta;
-
-  useEffect(() => {
-    if (!selectedMeta) return;
-    let cancelled = false;
-    setLoadingCases(true);
-    api
-      .listCases({
-        page: 1,
-        page_size: 3,
-        risk_type: selectedMeta.id,
-        is_insurance_related: true,
-      })
-      .then((res) => {
-        if (!cancelled) setCases(res.items);
-      })
-      .catch(() => {
-        if (!cancelled) setCases([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingCases(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedMeta?.id]);
-
-  // 星系布局：中心最大，周围按角度排布
-  const nodes = useMemo(() => {
-    const sorted = [...displayItems].sort((a, b) => b.count - a.count);
-    return sorted.map((item, i) => {
-      if (i === 0) {
-        return { ...item, x: 50, y: 48, isCenter: true as const };
-      }
-      const n = sorted.length - 1;
-      const angle = ((i - 1) / Math.max(n, 1)) * Math.PI * 2 - Math.PI / 2;
-      const radius = 28 + (i % 3) * 4;
-      return {
-        ...item,
-        x: 50 + Math.cos(angle) * radius,
-        y: 48 + Math.sin(angle) * radius,
-        isCenter: false as const,
-      };
+  const level1 = useMemo(() => {
+    const fromTree = (tagTree || []).filter((t) => t.level === 1 || /^R00[1-8]$/.test(t.risk_type_id));
+    const ids = RISK_ATLAS.map((m) => m.id);
+    return ids.map((id) => {
+      const meta = RISK_ATLAS.find((m) => m.id === id)!;
+      const node = fromTree.find((t) => t.risk_type_id === id);
+      const count = node?.case_count ?? distribution[id] ?? 0;
+      return { meta, count, node };
     });
-  }, [displayItems]);
+  }, [distribution, tagTree]);
 
-  function bubbleSize(count: number, isCenter: boolean) {
-    const ratio = count / maxCount;
-    const base = isCenter ? 92 : 62;
-    return base + ratio * (isCenter ? 42 : 48);
-  }
-
-  function metricValue(meta: RiskMeta, count: number) {
-    if (metric === "growth") {
-      const pct = Math.round(meta.trendHint * 1000) / 10;
-      return `${pct > 0 ? "+" : ""}${pct}%`;
+  const childrenOf = useMemo(() => {
+    const map = new Map<string, TagTreeNode[]>();
+    for (const n of tagTree || []) {
+      if (!n.parent_id) continue;
+      const list = map.get(n.parent_id) || [];
+      list.push(n);
+      map.set(n.parent_id, list);
     }
-    if (metric === "share") {
-      return `${((count / total) * 100).toFixed(1)}%`;
-    }
-    return count.toLocaleString("zh-CN");
+    return map;
+  }, [tagTree]);
+
+  const [selectedId, setSelectedId] = useState("R001");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
+
+  useEffect(() => {
+    const prefill = searchParams.get("risk_type");
+    if (prefill && RISK_NAME_MAP[prefill]) setSelectedId(prefill);
+  }, [searchParams]);
+
+  const selectedMeta: RiskMeta =
+    RISK_ATLAS.find((m) => m.id === selectedId) || RISK_ATLAS[0];
+  const selectedCount =
+    level1.find((i) => i.meta.id === selectedId)?.count ?? distribution[selectedId] ?? 0;
+  const selectedChildren = childrenOf.get(selectedId) || [];
+  const tone = categoryToneClass(selectedMeta.categoryTone);
+
+  const maxCount = Math.max(1, ...level1.map((i) => i.count));
+  const totalClassified = level1.reduce((s, i) => s + i.count, 0);
+
+  function bubblePx(count: number, isRoot = false) {
+    // 保证中文全称可换行完整显示：一级最小约 108px，根节点约 128px
+    if (!hasRealCounts) return isRoot ? 128 : 108;
+    const ratio = Math.sqrt(count / maxCount);
+    const min = isRoot ? 124 : 104;
+    const max = isRoot ? 148 : 128;
+    return min + ratio * (max - min);
   }
 
-  if (!selectedMeta || !selected) {
-    return (
-      <div className="surface rounded-2xl p-8 text-center text-sm text-muted-fg">
-        暂无风险分布数据
-      </div>
-    );
+  function onBubbleClick(id: string) {
+    setSelectedId(id);
+    setExpandedId((prev) => (prev === id ? null : id));
   }
 
-  const tone = heatTone(selectedMeta.heat);
-  const recentNew = Math.max(0, Math.round(selected.count * Math.abs(selectedMeta.trendHint)));
-  const highRiskShare = Math.min(68, Math.round(22 + selected.count / maxCount * 28));
+  const reviewPrefill = encodeURIComponent(
+    `${selectedMeta.name}：${selectedMeta.phrases[0] || selectedMeta.description.slice(0, 40)}`,
+  );
+
+  // 轨道半径（百分比）：略放大，减少与中心气泡重叠
+  const orbit = 36;
 
   return (
     <section className="surface overflow-hidden rounded-3xl">
-      {/* 标题 + 筛选 */}
-      <div className="flex flex-col gap-4 border-b border-border/70 px-5 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-6">
-        <div>
-          <h2 className="font-display text-2xl font-semibold sm:text-3xl">
-            保险监管处罚风险版图
-          </h2>
-          <p className="mt-1 max-w-xl text-sm text-muted-fg">
-            基于已入库处罚案例，展示高频风险类型、变化趋势与典型业务场景。
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2" role="group" aria-label="版图筛选">
-          {TIME_OPTIONS.map((opt) => (
-            <button
-              key={opt.id}
-              type="button"
-              aria-pressed={timeRange === opt.id}
-              onClick={() => setTimeRange(opt.id)}
-              className={[
-                "min-h-9 rounded-full px-3 text-xs font-semibold transition",
-                timeRange === opt.id
-                  ? "bg-primary text-white"
-                  : "border border-border bg-white text-muted-fg hover:border-primary/40 hover:text-primary",
-              ].join(" ")}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
+      <div className="border-b border-border/70 px-5 py-5 sm:px-6">
+        <h2 className="font-display text-2xl font-semibold sm:text-3xl">风险标签字典</h2>
+        <p className="mt-1 max-w-2xl text-sm text-muted-fg">
+          真实分类信息与案例证据。色彩表示业务类别，气泡大小表示真实案例数，连线表示标签层级。
+        </p>
       </div>
 
-      <div className="flex flex-wrap gap-2 border-b border-border/50 px-5 py-3 sm:px-6">
-        <span className="self-center text-xs text-muted-fg">展示指标</span>
-        {METRIC_OPTIONS.map((opt) => (
-          <button
-            key={opt.id}
-            type="button"
-            aria-pressed={metric === opt.id}
-            onClick={() => setMetric(opt.id)}
-            className={[
-              "min-h-9 rounded-lg px-3 text-xs font-medium transition",
-              metric === opt.id
-                ? "bg-muted text-primary ring-1 ring-primary/20"
-                : "text-muted-fg hover:bg-muted/70",
-            ].join(" ")}
-          >
-            {opt.label}
-          </button>
-        ))}
+      {/* 四项真实统计 */}
+      <div className="grid gap-3 border-b border-border/50 px-5 py-4 sm:grid-cols-2 lg:grid-cols-4 sm:px-6">
+        <MetricTile
+          label="保险相关案例数"
+          value={formatCount(insuranceCases)}
+          hint={insuranceCases == null ? "暂无真实统计" : undefined}
+        />
+        <MetricTile
+          label="待复核候选数"
+          value={formatCount(pendingReviewCount)}
+          hint={pendingReviewCount == null ? "暂无真实统计" : undefined}
+        />
+        <MetricTile
+          label="标签覆盖率"
+          value={formatRate(tagCoverageRate)}
+          hint={tagCoverageRate == null ? "暂无真实统计" : undefined}
+        />
+        <MetricTile
+          label="主体标准化完成率"
+          value={formatRate(entityNormalizeRate)}
+          hint={entityNormalizeRate == null ? "暂无真实统计" : undefined}
+        />
       </div>
 
       <div className="grid lg:grid-cols-12">
-        {/* 左侧气泡版图 — 主视觉占约 2/3 */}
-        <div className="relative border-b border-border/70 p-4 sm:p-5 lg:col-span-8 lg:border-b-0 lg:border-r lg:p-6">
-          <div
-            className="relative mx-auto h-[min(56vh,520px)] w-full overflow-hidden rounded-2xl bg-[radial-gradient(ellipse_at_center,_#eef4fb_0%,_#f8fafc_55%,_#e8eef5_100%)]"
-            role="list"
-            aria-label="风险类型气泡版图"
-          >
-            {/* 连线 */}
-            <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden>
-              {nodes
-                .filter((n) => !n.isCenter)
-                .map((n) => (
+        {/* 气泡树 */}
+        <div className="relative border-b border-border/70 bg-gradient-to-b from-slate-50/80 to-white p-4 sm:p-5 lg:col-span-7 lg:border-b-0 lg:border-r lg:p-6">
+          {!hasRealCounts ? (
+            <p className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-amber-200">
+              待接入案例统计：当前气泡使用统一尺寸，不展示编造数字。
+            </p>
+          ) : null}
+          <div className="relative mx-auto aspect-square w-full max-w-[34rem] min-h-[320px]">
+            <svg viewBox="0 0 100 100" className="absolute inset-0 h-full w-full" aria-hidden>
+              {level1.map((item, i) => {
+                const angle = (i / level1.length) * Math.PI * 2 - Math.PI / 2;
+                const x = 50 + Math.cos(angle) * orbit;
+                const y = 50 + Math.sin(angle) * orbit;
+                return (
                   <line
-                    key={`line-${n.meta.id}`}
-                    x1="50%"
-                    y1="48%"
-                    x2={`${n.x}%`}
-                    y2={`${n.y}%`}
-                    className={[
-                      "transition duration-300",
-                      hoveredId && hoveredId !== n.meta.id && hoveredId !== nodes[0]?.meta.id
-                        ? "stroke-slate-200/40"
-                        : selectedId === n.meta.id || hoveredId === n.meta.id
-                          ? "stroke-primary/50"
-                          : "stroke-slate-300/70",
-                    ].join(" ")}
-                    strokeWidth="1.5"
-                    strokeDasharray="4 4"
+                    key={`line-${item.meta.id}`}
+                    x1={50}
+                    y1={50}
+                    x2={x}
+                    y2={y}
+                    className="stroke-slate-300/80"
+                    strokeWidth={0.4}
+                    strokeLinecap="round"
                   />
-                ))}
+                );
+              })}
+              {expandedId
+                ? (childrenOf.get(expandedId) || []).slice(0, 6).map((child, i) => {
+                    const parent = level1.findIndex((x) => x.meta.id === expandedId);
+                    const pAngle = (parent / level1.length) * Math.PI * 2 - Math.PI / 2;
+                    const px = 50 + Math.cos(pAngle) * orbit;
+                    const py = 50 + Math.sin(pAngle) * orbit;
+                    const cAngle = pAngle + (i - 2.5) * 0.28;
+                    const cx = px + Math.cos(cAngle) * 16;
+                    const cy = py + Math.sin(cAngle) * 16;
+                    return (
+                      <line
+                        key={`cline-${child.risk_type_id}`}
+                        x1={px}
+                        y1={py}
+                        x2={cx}
+                        y2={cy}
+                        className="stroke-slate-300/70"
+                        strokeWidth={0.3}
+                        strokeLinecap="round"
+                      />
+                    );
+                  })
+                : null}
             </svg>
 
-            {nodes.map((node) => {
-              const size = bubbleSize(node.count, node.isCenter);
-              const ht = heatTone(node.meta.heat);
-              const active = selectedId === node.meta.id;
-              const dim =
-                hoveredId != null && hoveredId !== node.meta.id && selectedId !== node.meta.id;
-              const Icon = node.meta.icon;
-              const ringPct = Math.min(95, 35 + Math.abs(node.meta.trendHint) * 180);
+            {/* 中心根节点 */}
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedId("R001");
+                setExpandedId(null);
+              }}
+              className="absolute left-1/2 top-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 cursor-pointer flex-col items-center justify-center rounded-full bg-gradient-to-br from-primary to-secondary px-3 text-center text-white shadow-[0_10px_28px_rgba(15,23,42,0.18)] ring-4 ring-white transition duration-200 hover:scale-[1.03] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary motion-reduce:transition-none"
+              style={{
+                width: bubblePx(totalClassified, true),
+                height: bubblePx(totalClassified, true),
+              }}
+              aria-label={`保险监管处罚标签，共 ${hasRealCounts ? totalClassified : "未知"} 例`}
+            >
+              <span className="text-[11px] font-semibold leading-snug tracking-wide text-white/95">
+                保险监管
+              </span>
+              <span className="text-[11px] font-semibold leading-snug tracking-wide text-white/95">
+                处罚标签
+              </span>
+              <span className="mt-1 rounded-full bg-white/20 px-2 py-0.5 font-display text-xs font-bold tabular-nums backdrop-blur-sm">
+                {hasRealCounts ? `${totalClassified} 例` : "—"}
+              </span>
+            </button>
 
+            {level1.map((item, i) => {
+              const angle = (i / level1.length) * Math.PI * 2 - Math.PI / 2;
+              const x = 50 + Math.cos(angle) * orbit;
+              const y = 50 + Math.sin(angle) * orbit;
+              const size = bubblePx(item.count);
+              const selected = selectedId === item.meta.id;
+              const expanded = expandedId === item.meta.id;
+              const cat = categoryToneClass(item.meta.categoryTone);
               return (
                 <button
-                  key={node.meta.id}
+                  key={item.meta.id}
                   type="button"
-                  role="listitem"
-                  aria-pressed={active}
-                  aria-label={`${node.meta.id} ${node.meta.name}，${node.count} 条案例`}
-                  onMouseEnter={() => setHoveredId(node.meta.id)}
-                  onMouseLeave={() => setHoveredId(null)}
-                  onFocus={() => setHoveredId(node.meta.id)}
-                  onBlur={() => setHoveredId(null)}
-                  onClick={() => setSelectedId(node.meta.id)}
+                  onClick={() => onBubbleClick(item.meta.id)}
                   className={[
-                    "absolute flex -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center rounded-full text-white shadow-lg transition duration-300",
-                    `bg-gradient-to-br ${ht.fill}`,
-                    active ? "z-20 scale-105 ring-4 ring-white/80" : "z-10 hover:scale-105",
-                    dim ? "opacity-35" : "opacity-100",
+                    "absolute z-20 flex -translate-x-1/2 -translate-y-1/2 cursor-pointer flex-col items-center justify-center rounded-full bg-gradient-to-br px-2.5 text-center text-white shadow-[0_8px_22px_rgba(15,23,42,0.16)] ring-2 ring-white/90 transition duration-200 hover:scale-[1.05] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary motion-reduce:transition-none",
+                    cat.fill,
+                    selected || expanded
+                      ? "z-30 scale-[1.06] ring-4 ring-primary/45"
+                      : "",
                   ].join(" ")}
-                  style={{
-                    left: `${node.x}%`,
-                    top: `${node.y}%`,
-                    width: size,
-                    height: size,
-                  }}
-                  title={`${node.meta.id} ${node.meta.name}\n案例：${node.count}\n趋势：${ht.label}`}
+                  style={{ left: `${x}%`, top: `${y}%`, width: size, height: size }}
+                  aria-pressed={selected}
+                  aria-label={`${item.meta.id} ${item.meta.name}，${hasRealCounts ? `${item.count}例` : "暂无统计"}`}
+                  title={`${item.meta.id} ${item.meta.name}`}
                 >
-                  {/* 外圈趋势环 */}
-                  <svg
-                    className="pointer-events-none absolute inset-[-6px] h-[calc(100%+12px)] w-[calc(100%+12px)]"
-                    viewBox="0 0 100 100"
-                    aria-hidden
-                  >
-                    <circle
-                      cx="50"
-                      cy="50"
-                      r="46"
-                      fill="none"
-                      className={ht.ring}
-                      strokeWidth="3"
-                      strokeLinecap="round"
-                      strokeDasharray={`${ringPct * 2.9} 300`}
-                      opacity={node.meta.heat === "rising" || node.meta.heat === "hot" ? 0.95 : 0.45}
-                      transform="rotate(-90 50 50)"
-                    />
-                  </svg>
-                  <Icon className="mb-0.5 h-4 w-4 opacity-90" aria-hidden />
-                  <span className="font-display text-lg font-bold leading-none sm:text-xl">
-                    {metricValue(node.meta, node.count)}
+                  <span className="rounded-full bg-black/15 px-1.5 py-0.5 text-[10px] font-bold tracking-wide text-white/95">
+                    {item.meta.id}
                   </span>
-                  <span className="mt-1 max-w-[88%] truncate px-1 text-center text-[11px] font-medium leading-tight opacity-95">
-                    {node.meta.name}
+                  <span className="mt-1 w-full px-0.5 text-[12px] font-semibold leading-snug text-white [overflow-wrap:anywhere]">
+                    {item.meta.name}
+                  </span>
+                  <span className="mt-1 text-[11px] font-medium tabular-nums text-white/90">
+                    {hasRealCounts ? `${item.count}例` : "—"}
                   </span>
                 </button>
               );
             })}
-          </div>
 
-          {/* 图例 */}
-          <div className="mt-4 flex flex-wrap gap-3 text-[11px] text-muted-fg">
-            <span className="inline-flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-gradient-to-br from-red-600 to-rose-500" />
-              高风险
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-gradient-to-br from-amber-500 to-orange-500" />
-              上升
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-gradient-to-br from-primary to-secondary" />
-              常规
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-gradient-to-br from-emerald-600 to-teal-500" />
-              趋稳
-            </span>
-            <span className="text-muted-fg/80">气泡大小 = 案例数量 · 外圈 = 近期趋势</span>
+            {expandedId
+              ? (childrenOf.get(expandedId) || []).slice(0, 6).map((child, i) => {
+                  const parent = level1.findIndex((x) => x.meta.id === expandedId);
+                  const pAngle = (parent / level1.length) * Math.PI * 2 - Math.PI / 2;
+                  const px = 50 + Math.cos(pAngle) * orbit;
+                  const py = 50 + Math.sin(pAngle) * orbit;
+                  const cAngle = pAngle + (i - 2.5) * 0.28;
+                  const cx = px + Math.cos(cAngle) * 16;
+                  const cy = py + Math.sin(cAngle) * 16;
+                  const shortName =
+                    child.risk_type_name.length > 6
+                      ? `${child.risk_type_name.slice(0, 5)}…`
+                      : child.risk_type_name;
+                  return (
+                    <button
+                      key={child.risk_type_id}
+                      type="button"
+                      onClick={() => setSelectedId(expandedId)}
+                      className="absolute z-30 flex min-h-11 min-w-11 -translate-x-1/2 -translate-y-1/2 cursor-pointer flex-col items-center justify-center rounded-full bg-white px-1.5 text-center shadow-md ring-1 ring-slate-200/90 transition duration-200 hover:scale-105 hover:ring-primary/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary motion-reduce:transition-none"
+                      style={{ left: `${cx}%`, top: `${cy}%`, width: 56, height: 56 }}
+                      title={`${child.risk_type_id} ${child.risk_type_name}`}
+                      aria-label={`${child.risk_type_name}，${hasRealCounts ? `${child.case_count}例` : "暂无统计"}`}
+                    >
+                      <span className="max-w-full text-[10px] font-semibold leading-tight text-slate-800">
+                        {shortName}
+                      </span>
+                      <span className="mt-0.5 text-[10px] tabular-nums text-slate-500">
+                        {hasRealCounts ? child.case_count : "·"}
+                      </span>
+                    </button>
+                  );
+                })
+              : null}
           </div>
+          <p className="mt-3 text-center text-xs text-muted-fg">
+            点击一级标签展开子级；再次点击可收起。气泡内完整显示标签名称。
+          </p>
         </div>
 
-        {/* 右侧详情 — 约 1/3，信息密度更高 */}
-        <aside
-          className="flex max-h-[min(56vh,520px)] flex-col gap-3 overflow-y-auto p-4 sm:p-5 lg:col-span-4"
-          aria-live="polite"
-        >
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-fg">
-              风险详情
-            </p>
-            <h3 className="mt-1 font-display text-xl font-semibold leading-snug text-foreground">
-              <span className="text-primary">{selectedMeta.id}</span> {selectedMeta.name}
-            </h3>
-            <span
-              className={`mt-1.5 inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ${tone.badge}`}
-            >
-              {selectedMeta.category} · {tone.label}
-            </span>
+        {/* 标签知识卡 */}
+        <aside className="lg:col-span-5 p-5 sm:p-6">
+          <div className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${tone.badge}`}>
+            {selectedMeta.category}
           </div>
-
-          <p className="line-clamp-3 text-xs leading-relaxed text-slate-600 sm:text-sm">
-            {selectedMeta.description}
+          <h3 className="mt-3 font-display text-xl font-semibold">
+            {selectedMeta.id}｜{selectedMeta.name}
+          </h3>
+          <p className="mt-1 text-xs text-muted-fg">
+            关联案例 {hasRealCounts ? `${selectedCount} 例` : "待接入案例统计"}
           </p>
 
-          <dl className="grid grid-cols-2 gap-1.5 text-sm">
-            <MetricBox label="关联案例" value={selected.count.toLocaleString("zh-CN")} />
-            <MetricBox
-              label="近30天新增"
-              value={String(recentNew)}
-              hint={timeRange === "all" ? "示意" : undefined}
-            />
-            <MetricBox
-              label="环比变化"
-              value={`${selectedMeta.trendHint >= 0 ? "+" : ""}${(selectedMeta.trendHint * 100).toFixed(1)}%`}
-              icon={
-                selectedMeta.trendHint >= 0 ? (
-                  <TrendingUp className="h-3.5 w-3.5 text-warning" />
-                ) : (
-                  <TrendingDown className="h-3.5 w-3.5 text-accent" />
-                )
-              }
-            />
-            <MetricBox label="高风险占比" value={`${highRiskShare}%`} />
+          <dl className="mt-5 space-y-4 text-sm">
+            <div>
+              <dt className="text-xs font-semibold text-muted-fg">标签定义</dt>
+              <dd className="mt-1 leading-relaxed text-foreground">{selectedMeta.description}</dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold text-muted-fg">典型表达</dt>
+              <dd className="mt-1 flex flex-wrap gap-1.5">
+                {selectedMeta.phrases.map((p) => (
+                  <span key={p} className="rounded-md bg-muted px-2 py-0.5 text-xs">
+                    {p}
+                  </span>
+                ))}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold text-muted-fg">业务口语 → 监管标准表述</dt>
+              <dd className="mt-1 space-y-1">
+                {selectedMeta.colloquialMap.map((m) => (
+                  <p key={m.oral} className="text-xs leading-relaxed">
+                    <span className="text-muted-fg">{m.oral}</span>
+                    <span className="mx-1 text-muted-fg">→</span>
+                    <span className="font-medium">{m.standard}</span>
+                  </p>
+                ))}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs font-semibold text-muted-fg">标签层级</dt>
+              <dd className="mt-1 text-xs leading-relaxed">
+                {selectedChildren.length
+                  ? selectedChildren
+                      .map((c) => `${c.risk_type_id} ${c.risk_type_name}`)
+                      .join(" · ")
+                  : "一级标签（下级由字典 parent_id 动态加载；当前无下级或未入库）"}
+              </dd>
+            </div>
           </dl>
 
-          <div>
-            <h4 className="text-[11px] font-semibold text-muted-fg">高频场景</h4>
-            <div className="mt-1.5 flex flex-wrap gap-1">
-              {selectedMeta.scenes.map((s) => (
-                <span
-                  key={s}
-                  className="rounded-md bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground"
-                >
-                  {s}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <h4 className="text-[11px] font-semibold text-muted-fg">常见风险表达</h4>
-            <ul className="mt-1.5 space-y-1">
-              {selectedMeta.phrases.slice(0, 2).map((p) => (
-                <li
-                  key={p}
-                  className="rounded-lg border border-border/70 bg-slate-50 px-2.5 py-1.5 text-[11px] leading-relaxed text-slate-700"
-                >
-                  “{p}”
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div>
-            <h4 className="text-[11px] font-semibold text-muted-fg">典型案例</h4>
-            {loadingCases ? (
-              <p className="mt-1.5 text-[11px] text-muted-fg">加载中…</p>
-            ) : cases.length === 0 ? (
-              <p className="mt-1.5 text-[11px] text-muted-fg">暂无关联案例样例</p>
-            ) : (
-              <ul className="mt-1.5 space-y-1">
-                {cases.slice(0, 2).map((c) => (
-                  <li key={c.case_id}>
-                    <Link
-                      to={`/cases/${encodeURIComponent(c.case_id)}`}
-                      className="block rounded-lg border border-border/70 px-2.5 py-1.5 text-[11px] no-underline transition hover:border-primary/40 hover:bg-primary/5"
-                    >
-                      <span className="font-mono text-primary">{c.case_id}</span>
-                      <span className="mt-0.5 block truncate text-foreground">
-                        {c.party_name || "未命名当事人"}
-                      </span>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
+          <div className="mt-6 flex flex-col gap-2">
             <Link
               to={`/cases?risk_type=${encodeURIComponent(selectedMeta.id)}`}
-              className="inline-flex min-h-9 items-center gap-1 rounded-lg bg-primary px-3 text-[11px] font-semibold text-white no-underline hover:bg-primary-deep"
+              className="inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-white no-underline transition duration-200 hover:bg-primary-deep focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
             >
-              查看相关案例
-              <ArrowRight className="h-3 w-3" />
+              <Search className="h-4 w-4" aria-hidden />
+              查看关联案例
+              <ArrowRight className="h-4 w-4" aria-hidden />
             </Link>
             <Link
-              to="/review"
-              className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-border bg-white px-3 text-[11px] font-semibold text-primary no-underline hover:bg-muted"
+              to={`/review?prefill=${reviewPrefill}&risk_type=${encodeURIComponent(selectedMeta.id)}`}
+              className="inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-xl border border-primary/25 bg-white px-4 text-sm font-semibold text-primary no-underline transition duration-200 hover:bg-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
             >
-              <ShieldCheck className="h-3 w-3" />
-              智能审查
-            </Link>
-            <Link
-              to="/search"
-              className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-border bg-white px-3 text-[11px] font-semibold text-muted-fg no-underline hover:bg-muted"
-            >
-              <Search className="h-3 w-3" />
-              检索
+              <Scale className="h-4 w-4" aria-hidden />
+              用于智能审查
             </Link>
           </div>
         </aside>
-      </div>
-
-      {/* 下方风险链路 */}
-      <div className="border-t border-border/70 bg-gradient-to-r from-slate-50 to-white px-5 py-4 sm:px-6">
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-          <h3 className="font-display text-lg font-semibold">风险链路</h3>
-          <p className="text-xs text-muted-fg">
-            风险类型 → 风险表达 → 相似案例 → 审查建议
-          </p>
-        </div>
-        <div className="grid gap-3 md:grid-cols-3">
-          <ChainCard
-            label="典型表述"
-            body={`“${selectedMeta.phrases[0]}”`}
-          />
-          <ChainCard
-            label="相似案例"
-            body={
-              cases.length
-                ? cases.map((c) => c.case_id).join(" / ")
-                : `${selectedMeta.id} 相关案例`
-            }
-          />
-          <ChainCard label="整改建议" body={selectedMeta.suggestion} />
-        </div>
       </div>
     </section>
   );
 }
 
-function MetricBox({
+function MetricTile({
   label,
   value,
   hint,
-  icon,
 }: {
   label: string;
   value: string;
   hint?: string;
-  icon?: ReactNode;
 }) {
   return (
-    <div className="rounded-lg border border-border/70 bg-white px-2.5 py-2">
-      <dt className="text-[10px] text-muted-fg">
-        {label}
-        {hint ? <span className="ml-1 opacity-70">({hint})</span> : null}
-      </dt>
-      <dd className="mt-0.5 flex items-center gap-1 font-display text-lg font-semibold text-foreground">
-        {icon}
-        {value}
-      </dd>
-    </div>
-  );
-}
-
-function ChainCard({ label, body }: { label: string; body: string }) {
-  return (
-    <div className="rounded-xl border border-border/60 bg-white/90 px-3 py-3">
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-fg">{label}</p>
-      <p className="mt-1 text-sm leading-relaxed text-slate-700">{body}</p>
+    <div className="rounded-xl border border-border/70 bg-white/80 px-3 py-3">
+      <p className="text-xs text-muted-fg">{label}</p>
+      <p className="mt-1 font-display text-2xl font-semibold text-foreground">{value}</p>
+      {hint ? <p className="mt-0.5 text-[11px] text-muted-fg">{hint}</p> : null}
     </div>
   );
 }

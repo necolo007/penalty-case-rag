@@ -129,6 +129,20 @@ export interface StatsResponse {
   tag_distribution: Record<string, number>;
   cn_tag_distribution?: Record<string, number>;
   document_status: Record<string, number>;
+  /** 待复核候选数（材料审查未完成 + 未反馈审查日志） */
+  pending_review_count?: number | null;
+  /** 标签覆盖率 0~1；无数据时为 null */
+  tag_coverage_rate?: number | null;
+  /** 主体标准化完成率 0~1；无数据时为 null */
+  entity_normalize_rate?: number | null;
+  /** 风险标签树 + 真实案例数 */
+  tag_tree?: Array<{
+    risk_type_id: string;
+    parent_id: string | null;
+    level: number;
+    risk_type_name: string;
+    case_count: number;
+  }>;
 }
 
 export interface CnRiskTag {
@@ -181,15 +195,35 @@ export interface MaterialReviewResponse {
   /** 后端 overall_suggestion 的前端别名 */
   summary?: string;
   overall_suggestion?: string;
+  source_file?: string | null;
+  file_name?: string | null;
+  raw_text?: string | null;
   /** 后端 sentence_reviews 的前端别名（已在 to_dict 中映射） */
   risk_sentences?: Array<{
     text?: string;
     risk_level?: string;
     suggestion?: string;
     risk_types?: string[];
+    risk_type_ids?: string[];
     compliance_reason?: string;
     confidence?: number;
+    position_start?: number;
+    position_end?: number;
+    paragraph_idx?: number;
+    hit_case_id?: string | null;
+    hit_penalty_doc_no?: string | null;
+    hit_party_name?: string | null;
+    case_key_field?: string | null;
+    match_reason?: string | null;
+    source_file?: string | null;
+    retrieved_cases?: Array<Record<string, unknown>>;
     [key: string]: unknown;
+  }>;
+  case_blocks?: Array<{
+    block_id: string;
+    paragraph_idx: number;
+    label: string;
+    risk_sentences: Array<Record<string, unknown>>;
   }>;
   sentence_reviews?: Array<Record<string, unknown>>;
   [key: string]: unknown;

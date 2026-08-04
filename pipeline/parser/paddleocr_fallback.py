@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 
 from pipeline.parser.base import BaseParser, ParseResult, RawDocument
+from pipeline.parser.ocr_normalize import normalize_ocr_text
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ class OCRFallback(BaseParser):
                     lines.append(text.strip())
                     scores.append(score)
 
-        markdown = "\n".join(lines)
+        markdown = normalize_ocr_text("\n".join(lines))
         confidence = sum(scores) / len(scores) if scores else 0.0
         return ParseResult(
             success=bool(markdown),

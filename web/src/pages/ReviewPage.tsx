@@ -1,14 +1,123 @@
-import { useRef, useState, type DragEvent, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
 import { FileUp, Loader2, Scale, X } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { ErrorAlert, TagChip } from "../components/ui";
 import { ThinkingPanel } from "../components/ThinkingPanel";
 import { reviewSession, useReviewSession } from "../lib/reviewSession";
 
+function riskTone(level?: string): string {
+  const lv = (level || "").toLowerCase();
+  if (lv === "high" || lv === "高") return "bg-red-50 text-red-700 ring-red-200";
+  if (lv === "medium" || lv === "中") return "bg-amber-50 text-amber-800 ring-amber-200";
+  if (lv === "low" || lv === "低") return "bg-emerald-50 text-emerald-800 ring-emerald-200";
+  return "bg-slate-50 text-slate-700 ring-slate-200";
+}
+
+function riskLabel(level?: string): string {
+  const lv = (level || "").toLowerCase();
+  if (lv === "high") return "高";
+  if (lv === "medium") return "中";
+  if (lv === "low") return "低";
+  if (lv === "none") return "未发现";
+  return level || "—";
+}
+
+function HighlightedText({
+  text,
+  ranges,
+  activeStart,
+}: {
+  text: string;
+  ranges: Array<{ start: number; end: number; level?: string }>;
+  activeStart?: number | null;
+}) {
+  if (!text) return <p className="text-sm text-muted-fg">暂无原文</p>;
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  sorted.forEach((r, i) => {
+    const start = Math.max(0, Math.min(text.length, r.start));
+    const end = Math.max(start, Math.min(text.length, r.end));
+    if (start > cursor) {
+      nodes.push(<span key={`t-${i}`}>{text.slice(cursor, start)}</span>);
+    }
+    const active = activeStart != null && activeStart === r.start;
+    nodes.push(
+      <mark
+        key={`m-${i}`}
+        id={`risk-span-${r.start}`}
+        className={[
+          "rounded px-0.5",
+          r.level === "high" || r.level === "高"
+            ? "bg-red-200/90 text-red-950"
+            : r.level === "medium" || r.level === "中"
+              ? "bg-amber-200/80 text-amber-950"
+              : "bg-emerald-100 text-emerald-950",
+          active ? "ring-2 ring-primary" : "",
+        ].join(" ")}
+      >
+        {text.slice(start, end)}
+      </mark>,
+    );
+    cursor = end;
+  });
+  if (cursor < text.length) nodes.push(<span key="tail">{text.slice(cursor)}</span>);
+  return (
+    <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-slate-800">
+      {nodes}
+    </pre>
+  );
+}
+
 export function ReviewPage() {
   const s = useReviewSession();
   const [dragOver, setDragOver] = useState(false);
+  const [activeSpan, setActiveSpan] = useState<number | null>(null);
+  const [humanNote, setHumanNote] = useState("");
+  const [humanSaved, setHumanSaved] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [searchParams] = useSearchParams();
+
+  useEffect(() => {
+    const prefill = searchParams.get("prefill");
+    if (prefill) {
+      reviewSession.setTab("sentence");
+      reviewSession.setQuery(prefill);
+    }
+  }, [searchParams]);
+
+  const materialText = useMemo(() => {
+    const report = s.materialReport;
+    if (!report) return s.material;
+    return String(report.raw_text || s.material || "");
+  }, [s.materialReport, s.material]);
+
+  const highlightRanges = useMemo(() => {
+    const sentences = s.materialReport?.risk_sentences || [];
+    return sentences
+      .filter((x) => typeof x.position_start === "number" && typeof x.position_end === "number")
+      .map((x) => ({
+        start: Number(x.position_start),
+        end: Number(x.position_end),
+        level: x.risk_level,
+      }));
+  }, [s.materialReport]);
+
+  const blocks = useMemo(() => {
+    const report = s.materialReport;
+    if (report?.case_blocks?.length) return report.case_blocks;
+    if (report?.risk_sentences?.length) {
+      return [
+        {
+          block_id: "block-1",
+          paragraph_idx: 0,
+          label: "风险识别结果",
+          risk_sentences: report.risk_sentences,
+        },
+      ];
+    }
+    return [];
+  }, [s.materialReport]);
 
   function onSentenceReview(e: FormEvent) {
     e.preventDefault();
@@ -27,6 +136,18 @@ export function ReviewPage() {
     if (file) void reviewSession.startMaterialFile(file);
   }
 
+  async function onHumanReviewComplete() {
+    const ok = await reviewSession.saveMaterialHumanReview(humanNote);
+    if (ok) setHumanSaved(true);
+  }
+
+  function focusSpan(start?: number) {
+    if (start == null) return;
+    setActiveSpan(start);
+    const el = document.getElementById(`risk-span-${start}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
   return (
     <div className="space-y-8">
       <header className="rise-in relative overflow-hidden rounded-3xl border border-border/50 bg-primary-deep px-6 py-8 text-white sm:px-8">
@@ -40,8 +161,7 @@ export function ReviewPage() {
         <div className="relative max-w-2xl">
           <h1 className="font-display text-4xl font-bold">智能审查</h1>
           <p className="mt-2 text-sm text-white/85 sm:text-base">
-            核心能力：审查整篇材料或单句表述，生成可追溯合规意见；思考过程可折叠回看。
-            切换其他页面时任务会在后台继续，结果自动保留。
+            材料原文右侧展开、风险句高亮定位；报告展示风险类型、命中案例、文号与匹配理由，并支持人工复核。
           </p>
         </div>
       </header>
@@ -97,62 +217,43 @@ export function ReviewPage() {
         ))}
       </div>
 
+      {s.error ? <ErrorAlert message={s.error} /> : null}
+
       {s.tab === "sentence" ? (
-        <form onSubmit={onSentenceReview} className="surface rounded-3xl p-6">
-          <label htmlFor="review-q" className="mb-2 block text-sm font-semibold">
-            待审查表述
+        <form onSubmit={onSentenceReview} className="surface space-y-4 rounded-3xl p-6">
+          <label className="block text-sm font-semibold" htmlFor="sentence-query">
+            待审查语句
           </label>
           <textarea
-            id="review-q"
-            rows={4}
+            id="sentence-query"
             value={s.query}
             onChange={(e) => reviewSession.setQuery(e.target.value)}
-            className="w-full rounded-2xl border border-border bg-white p-4 text-sm leading-relaxed outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
-            placeholder="（示例）购买本产品即可领取价值1000元体检卡。"
+            rows={5}
+            className="w-full rounded-xl border border-border bg-white px-4 py-3 text-sm"
+            placeholder="粘贴营销话术或风险表述…"
           />
-          <p className="mt-2 text-xs text-muted-fg">
-            也可粘贴业务话术、宣传文案或可疑表述进行风险研判。
-          </p>
-          <div className="mt-4 flex flex-wrap items-end gap-4">
-            <div>
-              <label htmlFor="topk" className="mb-1 block text-xs font-semibold text-muted-fg">
-                参考案例数
-              </label>
-              <input
-                id="topk"
-                type="number"
-                min={1}
-                max={20}
-                value={s.topK}
-                onChange={(e) => reviewSession.setTopK(Number(e.target.value) || 5)}
-                className="min-h-11 w-28 rounded-xl border border-border bg-white px-3 text-sm"
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={s.loading}
-              className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-semibold text-white hover:bg-primary-deep disabled:opacity-60"
-            >
-              {s.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Scale className="h-4 w-4" />}
-              生成审查意见
-            </button>
-          </div>
+          <button
+            type="submit"
+            disabled={s.loading}
+            className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-semibold text-white disabled:opacity-60"
+          >
+            {s.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Scale className="h-4 w-4" />}
+            生成审查意见
+          </button>
         </form>
       ) : (
         <form onSubmit={onMaterialReview} className="surface space-y-4 rounded-3xl p-6">
-          <div>
-            <label htmlFor="scene" className="mb-1.5 block text-xs font-semibold text-muted-fg">
-              业务场景（可选）
-            </label>
-            <input
-              id="scene"
-              value={s.scene}
-              onChange={(e) => reviewSession.setScene(e.target.value)}
-              className="min-h-11 w-full max-w-md rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
-              placeholder="如：产品宣传 / 代理人话术"
-            />
-          </div>
-
+          <label className="block text-sm font-semibold" htmlFor="material-text">
+            材料文本
+          </label>
+          <textarea
+            id="material-text"
+            value={s.material}
+            onChange={(e) => reviewSession.setMaterial(e.target.value)}
+            rows={8}
+            className="w-full rounded-xl border border-border bg-white px-4 py-3 text-sm"
+            placeholder="粘贴整篇营销材料或处罚文书文本…"
+          />
           <div
             onDragOver={(e) => {
               e.preventDefault();
@@ -161,189 +262,229 @@ export function ReviewPage() {
             onDragLeave={() => setDragOver(false)}
             onDrop={onDrop}
             className={[
-              "rounded-2xl border-2 border-dashed px-6 py-10 text-center transition duration-200",
-              dragOver ? "border-primary bg-primary/5" : "border-border bg-slate-50/80",
+              "flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed px-4 py-8 text-sm",
+              dragOver ? "border-primary bg-primary/5" : "border-border bg-slate-50/60",
             ].join(" ")}
           >
-            <FileUp className="mx-auto h-8 w-8 text-primary" aria-hidden />
-            <p className="mt-3 text-sm font-semibold text-foreground">拖拽 PDF / Word 到此处上传</p>
-            <p className="mt-1 text-xs text-muted-fg">支持 .pdf / .docx / .txt / .pptx</p>
-            <label className="mt-4 inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-xl border border-border bg-white px-4 text-sm font-medium hover:bg-muted">
+            <FileUp className="h-5 w-5 text-primary" />
+            <p className="text-muted-fg">拖拽上传 txt / docx / pdf / pptx，或点击选择文件</p>
+            <button
+              type="button"
+              className="text-sm font-semibold text-primary"
+              onClick={() => fileRef.current?.click()}
+            >
               选择文件
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".txt,.docx,.pdf,.pptx"
-                className="sr-only"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) void reviewSession.startMaterialFile(f);
-                  e.target.value = "";
-                }}
-              />
-            </label>
-          </div>
-
-          <div>
-            <label htmlFor="mat" className="mb-1.5 block text-sm font-semibold">
-              或粘贴材料文本
-            </label>
-            <textarea
-              id="mat"
-              rows={8}
-              value={s.material}
-              onChange={(e) => reviewSession.setMaterial(e.target.value)}
-              className="w-full rounded-2xl border border-border bg-white p-4 text-sm leading-relaxed outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
-              placeholder="（示例）购买本产品即可领取价值1000元体检卡。"
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".txt,.docx,.pdf,.pptx"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void reviewSession.startMaterialFile(f);
+              }}
             />
           </div>
           <button
             type="submit"
             disabled={s.loading}
-            className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-semibold text-white hover:bg-primary-deep disabled:opacity-60"
+            className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-semibold text-white disabled:opacity-60"
           >
             {s.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Scale className="h-4 w-4" />}
-            开始智能分析
+            开始材料审查
           </button>
         </form>
       )}
 
-      <ThinkingPanel
-        active={s.loading}
-        finished={s.thinkFinished}
-        queryHint={s.thinkHint}
-        elapsedMs={s.thinkElapsedMs}
-        startedAt={s.thinkStartedAt}
-      />
-
-      {s.error ? <ErrorAlert message={s.error} /> : null}
-
-      {s.review ? (
-        <section className="surface rise-in space-y-5 rounded-3xl border border-border bg-white p-6 shadow-[var(--shadow-soft)]">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="font-display text-2xl font-semibold">审查报告</h2>
-            <span className="font-mono text-xs text-muted-fg">{s.review.review_id}</span>
-          </div>
-
-          <div>
-            <h3 className="text-sm font-semibold text-muted-fg">风险类型判定</h3>
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {(s.review.risk_types ?? []).length ? (
-                (s.review.risk_types ?? []).map((t) => <TagChip key={t}>{t}</TagChip>)
-              ) : (
-                <span className="text-sm text-muted-fg">未返回风险类型</span>
-              )}
-            </div>
-          </div>
-
-          <div>
-            <h3 className="text-sm font-semibold text-muted-fg">合规整改建议</h3>
-            <p className="mt-2 whitespace-pre-wrap rounded-xl bg-slate-50 px-4 py-3 text-sm leading-relaxed text-slate-700">
-              {s.review.suggestion || "（未返回建议，请确认 LLM 已配置）"}
-            </p>
-          </div>
-
-          {s.review.case_analysis && s.review.case_analysis.length > 0 ? (
-            <div>
-              <h3 className="text-sm font-semibold text-muted-fg">相似案例 Top5</h3>
-              <ul className="mt-2 space-y-3">
-                {s.review.case_analysis.slice(0, 5).map((a, i) => {
-                  const id = String(a.case_id ?? i);
-                  const fb = s.feedback[id];
-                  return (
-                    <li key={id} className="rounded-xl border border-border/80 bg-slate-50/80 px-4 py-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <Link
-                          to={`/cases/${encodeURIComponent(String(a.case_id ?? ""))}`}
-                          className="font-mono text-xs font-semibold text-primary no-underline hover:underline"
-                        >
-                          {a.case_id || "未知案例"}
-                        </Link>
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            disabled={!!s.feedbackSaving[id]}
-                            onClick={() => void reviewSession.submitCaseFeedback(id, "agree")}
-                            className={[
-                              "min-h-9 rounded-lg px-2.5 text-xs font-medium",
-                              fb === "agree" ? "bg-accent text-white" : "border border-border bg-white",
-                            ].join(" ")}
-                          >
-                            确认风险
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!!s.feedbackSaving[id]}
-                            onClick={() => void reviewSession.submitCaseFeedback(id, "partial")}
-                            className={[
-                              "min-h-9 rounded-lg px-2.5 text-xs font-medium",
-                              fb === "partial" ? "bg-amber-500 text-white" : "border border-border bg-white",
-                            ].join(" ")}
-                          >
-                            部分正确
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!!s.feedbackSaving[id]}
-                            onClick={() => void reviewSession.submitCaseFeedback(id, "disagree")}
-                            className={[
-                              "min-h-9 rounded-lg px-2.5 text-xs font-medium",
-                              fb === "disagree" ? "bg-destructive text-white" : "border border-border bg-white",
-                            ].join(" ")}
-                          >
-                            确认误报
-                          </button>
-                        </div>
-                      </div>
-                      <p className="mt-2 text-sm text-slate-700">{a.similarity_reason || "—"}</p>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          ) : null}
-          <p className="text-xs text-muted-fg">耗时 {s.review.took_ms} ms</p>
-        </section>
+      {(s.loading || s.thinkFinished) && s.thinkHint ? (
+        <ThinkingPanel
+          active={s.loading}
+          queryHint={s.thinkHint}
+          finished={s.thinkFinished}
+          elapsedMs={s.thinkElapsedMs}
+          startedAt={s.thinkStartedAt}
+        />
       ) : null}
 
-      {s.materialReport ? (
+      {s.review ? (
         <section className="surface rise-in space-y-4 rounded-3xl bg-white p-6">
-          <h2 className="font-display text-2xl font-semibold">材料审查报告</h2>
-          {s.materialReport.overall_risk ? (
-            <p className="text-sm">
-              <span className="text-muted-fg">整体风险：</span>
-              <strong className="text-primary">{String(s.materialReport.overall_risk)}</strong>
-            </p>
+          <h2 className="font-display text-2xl font-semibold">单句审查结果</h2>
+          {Array.isArray(s.review.risk_types) && s.review.risk_types.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {s.review.risk_types.map((t) => (
+                <TagChip key={t}>{t}</TagChip>
+              ))}
+            </div>
           ) : null}
-          {s.materialReport.summary || s.materialReport.overall_suggestion ? (
+          {s.review.suggestion ? (
             <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
-              {String(s.materialReport.summary || s.materialReport.overall_suggestion)}
+              {s.review.suggestion}
             </p>
           ) : null}
-          {Array.isArray(s.materialReport.risk_sentences) && s.materialReport.risk_sentences.length > 0 ? (
-            <ul className="space-y-3">
-              {s.materialReport.risk_sentences.map((item, i) => (
-                <li key={i} className="rounded-xl border border-border/80 bg-slate-50 px-4 py-3">
-                  {item.risk_level ? (
-                    <span className="mb-2 inline-block rounded-md bg-red-50 px-2 py-0.5 text-xs font-semibold text-destructive">
-                      {String(item.risk_level)}
-                    </span>
-                  ) : null}
-                  {Array.isArray(item.risk_types) && item.risk_types.length > 0 ? (
-                    <p className="mb-1 text-xs text-muted-fg">{item.risk_types.join("；")}</p>
-                  ) : null}
-                  <p className="text-sm text-foreground">{item.text || JSON.stringify(item)}</p>
-                  {item.suggestion ? (
-                    <p className="mt-2 text-xs text-muted-fg">{String(item.suggestion)}</p>
+          {Array.isArray(s.review.case_analysis) && s.review.case_analysis.length > 0 ? (
+            <ul className="space-y-2">
+              {s.review.case_analysis.map((c, i) => (
+                <li key={i} className="rounded-xl border border-border/80 bg-slate-50 px-4 py-3 text-sm">
+                  <Link
+                    to={`/cases/${encodeURIComponent(String(c.case_id || ""))}`}
+                    className="font-semibold text-primary no-underline hover:underline"
+                  >
+                    {String(c.case_id || `案例 ${i + 1}`)}
+                  </Link>
+                  {c.similarity_reason ? (
+                    <p className="mt-1 text-xs text-muted-fg">{String(c.similarity_reason)}</p>
                   ) : null}
                 </li>
               ))}
             </ul>
-          ) : (
-            <pre className="overflow-x-auto rounded-xl bg-muted/70 p-4 text-xs text-slate-700">
-              {JSON.stringify(s.materialReport, null, 2)}
-            </pre>
-          )}
+          ) : null}
+        </section>
+      ) : null}
+
+      {s.materialReport ? (
+        <section className="space-y-4">
+          <div className="surface rounded-3xl p-5 sm:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="font-display text-2xl font-semibold">材料审查报告</h2>
+                <p className="mt-1 text-xs text-muted-fg">
+                  来源文件：{s.materialReport.file_name || s.materialReport.source_file || "粘贴文本"}
+                </p>
+              </div>
+              {s.materialReport.overall_risk ? (
+                <span
+                  className={`rounded-full px-3 py-1 text-xs font-semibold ring-1 ${riskTone(s.materialReport.overall_risk)}`}
+                >
+                  整体风险：{riskLabel(s.materialReport.overall_risk)}
+                </span>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-12">
+            <div className="space-y-4 lg:col-span-7">
+              {blocks.map((block) => (
+                <div key={block.block_id} className="surface rounded-2xl p-5">
+                  <h3 className="font-display text-lg font-semibold">{block.label}</h3>
+                  <ul className="mt-4 space-y-4">
+                    {(block.risk_sentences || []).map((raw, i) => {
+                      const item = raw as NonNullable<
+                        NonNullable<typeof s.materialReport>["risk_sentences"]
+                      >[number];
+                      return (
+                        <li
+                          key={`${block.block_id}-${i}`}
+                          className="rounded-xl border border-border/80 bg-white px-4 py-3"
+                        >
+                          <div className="mb-2 flex flex-wrap items-center gap-2">
+                            <span
+                              className={`rounded-md px-2 py-0.5 text-xs font-semibold ring-1 ${riskTone(item.risk_level)}`}
+                            >
+                              风险等级：{riskLabel(item.risk_level)}
+                            </span>
+                            {typeof item.confidence === "number" ? (
+                              <span className="text-xs text-muted-fg">
+                                置信度 {(item.confidence * 100).toFixed(0)}%
+                              </span>
+                            ) : null}
+                          </div>
+                          <button
+                            type="button"
+                            className="text-left text-sm font-medium text-foreground hover:text-primary"
+                            onClick={() => focusSpan(item.position_start)}
+                          >
+                            风险语句原文：「{item.text}」
+                          </button>
+                          <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+                            <div>
+                              <dt className="text-muted-fg">风险类型</dt>
+                              <dd className="mt-0.5 font-medium">
+                                {(item.risk_types || []).join("；") || "—"}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-muted-fg">命中案例</dt>
+                              <dd className="mt-0.5 font-medium">
+                                {item.hit_case_id ? (
+                                  <Link
+                                    to={`/cases/${encodeURIComponent(item.hit_case_id)}`}
+                                    className="text-primary no-underline hover:underline"
+                                  >
+                                    {item.hit_case_id}
+                                    {item.hit_party_name ? ` · ${item.hit_party_name}` : ""}
+                                  </Link>
+                                ) : (
+                                  "—"
+                                )}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-muted-fg">处罚文号</dt>
+                              <dd className="mt-0.5 font-medium">{item.hit_penalty_doc_no || "—"}</dd>
+                            </div>
+                            <div>
+                              <dt className="text-muted-fg">案例关键字段</dt>
+                              <dd className="mt-0.5 font-medium">{item.case_key_field || "—"}</dd>
+                            </div>
+                            <div className="sm:col-span-2">
+                              <dt className="text-muted-fg">匹配理由</dt>
+                              <dd className="mt-0.5 leading-relaxed text-slate-700">
+                                {item.match_reason || item.compliance_reason || "—"}
+                              </dd>
+                            </div>
+                            <div className="sm:col-span-2">
+                              <dt className="text-muted-fg">整改建议</dt>
+                              <dd className="mt-0.5 leading-relaxed text-slate-700">
+                                {item.suggestion || "—"}
+                              </dd>
+                            </div>
+                          </dl>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
+
+              <div className="surface rounded-2xl p-5">
+                <h3 className="font-display text-lg font-semibold">人工复核</h3>
+                <p className="mt-1 text-xs text-muted-fg">
+                  供工作人员填写复核意见；点击完成后写入材料审查记录。
+                </p>
+                <textarea
+                  value={humanNote}
+                  onChange={(e) => {
+                    setHumanNote(e.target.value);
+                    setHumanSaved(false);
+                  }}
+                  rows={4}
+                  className="mt-3 w-full rounded-xl border border-border bg-white px-4 py-3 text-sm"
+                  placeholder="复核建议（可留空）…"
+                />
+                <button
+                  type="button"
+                  disabled={Boolean(s.feedbackSaving.human)}
+                  onClick={() => void onHumanReviewComplete()}
+                  className="mt-3 inline-flex min-h-11 items-center rounded-xl bg-primary px-5 text-sm font-semibold text-white disabled:opacity-60"
+                >
+                  {s.feedbackSaving.human ? "保存中…" : humanSaved ? "已完成复核" : "复核完成"}
+                </button>
+              </div>
+            </div>
+
+            <aside className="surface sticky top-4 h-fit max-h-[80vh] overflow-auto rounded-2xl p-5 lg:col-span-5">
+              <h3 className="font-display text-lg font-semibold">材料原文</h3>
+              <p className="mt-1 text-xs text-muted-fg">高风险语句已高亮；点击左侧风险句可定位。</p>
+              <div className="mt-4 rounded-xl border border-border/70 bg-slate-50/80 p-3">
+                <HighlightedText
+                  text={materialText}
+                  ranges={highlightRanges}
+                  activeStart={activeSpan}
+                />
+              </div>
+            </aside>
+          </div>
         </section>
       ) : null}
     </div>

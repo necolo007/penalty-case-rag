@@ -1,22 +1,39 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  CheckCircle2,
   Database,
   FileStack,
   Search,
-  ShieldAlert,
   ShieldCheck,
   Sparkles,
-  TrendingUp,
 } from "lucide-react";
 import { api } from "../api/client";
 import type { StatsResponse } from "../api/types";
 import { ErrorAlert, LoadingBlock } from "../components/ui";
 import { RiskAtlasPanel } from "../components/RiskAtlasPanel";
-import { RISK_NAME_MAP } from "../lib/riskAtlas";
 
 const CAPABILITY_PILLS = ["多源文档解析", "四路混合召回", "RRF融合精排", "证据可追溯"];
+
+const CORE_CAPABILITIES = [
+  {
+    title: "相似案例检索",
+    body: "输入风险表述，基于混合召回与精排返回可解释的相似处罚案例、文号与处罚结果，支撑合规判断。",
+    to: "/search",
+    cta: "进入相似案例检索",
+  },
+  {
+    title: "智能审查",
+    body: "上传或粘贴营销材料，定位风险原句并高亮，匹配风险类型、命中案例与整改建议，支持人工复核。",
+    to: "/review",
+    cta: "开始智能审查",
+  },
+  {
+    title: "风险标签字典",
+    body: "以真实案例统计呈现 R001–R008 标签体系，查看定义、典型表达与关联案例入口。",
+    to: "/#risk-dict",
+    cta: "查看标签字典",
+  },
+];
 
 const HERO_SLIDES = [
   {
@@ -27,7 +44,6 @@ const HERO_SLIDES = [
     title: "案库",
     subtitle: "让每一条合规判断，都有案例依据",
     body: "从监管处罚文件中提取结构化案例，智能识别风险表述并匹配相似处罚依据，帮助合规人员快速形成可解释、可追溯的审查意见。",
-    light: false,
   },
   {
     id: "promo",
@@ -35,16 +51,14 @@ const HERO_SLIDES = [
     imageAlt: "智能审查与风险分析能力示意",
     eyebrow: "保险监管处罚案例知识库",
     title: "案有所据，审有所依",
-    subtitle: "智能审查 · 风险分析 · 合规报告一体贯通",
+    subtitle: "相似案例检索 · 智能审查 · 风险标签一体贯通",
     body: "文档解析入库、四路混合召回与精排归因，支撑整篇材料审查与单句风险研判，沉淀可追溯审查意见。",
-    light: false,
   },
 ] as const;
 
 export function OverviewPage() {
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [carouselIdx, setCarouselIdx] = useState(0);
   const [heroIdx, setHeroIdx] = useState(0);
 
   useEffect(() => {
@@ -64,55 +78,10 @@ export function OverviewPage() {
 
   useEffect(() => {
     const id = window.setInterval(() => {
-      setCarouselIdx((i) => (i + 1) % 3);
-    }, 4500);
-    return () => window.clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
       setHeroIdx((i) => (i + 1) % HERO_SLIDES.length);
     }, 7000);
     return () => window.clearInterval(id);
   }, []);
-
-  const extractRate = useMemo(() => {
-    if (!stats || !stats.documents) return null;
-    return Math.min(99.9, (stats.cases / Math.max(stats.documents, 1)) * 100);
-  }, [stats]);
-
-  const insuranceRate = useMemo(() => {
-    if (!stats || !stats.cases) return null;
-    return Math.min(99.9, (stats.insurance_cases / Math.max(stats.cases, 1)) * 100);
-  }, [stats]);
-
-  const topTags = stats
-    ? Object.entries(stats.cn_tag_distribution ?? stats.tag_distribution)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 8)
-    : [];
-
-  const insightSlides = [
-    {
-      title: "高频风险词",
-      body: topTags.length
-        ? topTags
-            .slice(0, 5)
-            .map(([id]) => RISK_NAME_MAP[id] || id)
-            .join(" · ")
-        : "暂无风险标签数据",
-    },
-    {
-      title: "知识库覆盖",
-      body: stats
-        ? `保险相关 ${stats.insurance_cases.toLocaleString("zh-CN")} / 全量 ${stats.cases.toLocaleString("zh-CN")}，向量化 ${stats.embedded_cases.toLocaleString("zh-CN")}`
-        : "加载中…",
-    },
-    {
-      title: "审查链路",
-      body: "文档切分 → 风险识别 → 四路召回 → RRF 融合 → 精排 → 可追溯意见",
-    },
-  ];
 
   const slide = HERO_SLIDES[heroIdx];
 
@@ -133,7 +102,6 @@ export function OverviewPage() {
             fetchPriority={i === 0 ? "high" : "low"}
           />
         ))}
-        {/* 左白渐变遮罩，保证文案对比度 */}
         <div
           className="absolute inset-0 bg-gradient-to-r from-white via-white/90 to-transparent"
           aria-hidden
@@ -169,18 +137,18 @@ export function OverviewPage() {
 
             <div className="mt-8 flex flex-wrap gap-3">
               <Link
-                to="/review"
+                to="/search"
                 className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white no-underline shadow-lg transition duration-200 hover:bg-primary-deep"
               >
-                <ShieldCheck className="h-4 w-4" aria-hidden />
-                开始智能审查
+                <Search className="h-4 w-4" aria-hidden />
+                相似案例检索
               </Link>
               <Link
-                to="/search"
+                to="/review"
                 className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-primary/20 bg-white/80 px-5 py-2.5 text-sm font-semibold text-primary no-underline backdrop-blur-sm transition duration-200 hover:bg-white"
               >
-                <Search className="h-4 w-4" aria-hidden />
-                智能检索
+                <ShieldCheck className="h-4 w-4" aria-hidden />
+                智能审查
               </Link>
             </div>
           </div>
@@ -203,85 +171,63 @@ export function OverviewPage() {
         </div>
       </section>
 
+      {/* 核心能力介绍 */}
+      <section className="surface rounded-3xl p-6 sm:p-8">
+        <h2 className="font-display text-2xl font-semibold">核心能力</h2>
+        <p className="mt-1 text-sm text-muted-fg">
+          检索在前、审查在后：先找相似处罚依据，再对材料做可定位、可复核的合规审查。
+        </p>
+        <div className="mt-6 grid gap-4 md:grid-cols-3">
+          {CORE_CAPABILITIES.map((cap) => (
+            <div
+              key={cap.title}
+              className="flex flex-col rounded-2xl border border-border/70 bg-white/80 p-5"
+            >
+              <h3 className="font-display text-lg font-semibold">{cap.title}</h3>
+              <p className="mt-2 flex-1 text-sm leading-relaxed text-muted-fg">{cap.body}</p>
+              <Link
+                to={cap.to}
+                className="mt-4 inline-flex text-sm font-semibold text-primary no-underline hover:underline"
+              >
+                {cap.cta} →
+              </Link>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {error ? <ErrorAlert message={error} /> : null}
       {!stats && !error ? <LoadingBlock label="加载驾驶舱数据…" /> : null}
 
       {stats ? (
         <>
-          <section className="stagger grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-            <StatCard
-              icon={FileStack}
-              label="处罚文档"
-              value={stats.documents}
-              meta={
-                <span className="inline-flex items-center gap-1 text-accent">
-                  <TrendingUp className="h-3.5 w-3.5" />
-                  较昨日 +1
-                </span>
-              }
-            />
-            <StatCard
-              icon={Database}
-              label="结构化案例"
-              value={stats.cases}
-              meta={
-                extractRate != null ? (
-                  <span>
-                    抽取成功率{" "}
-                    <strong className="font-display text-lg text-primary">
-                      {extractRate.toFixed(1)}%
-                    </strong>
-                  </span>
-                ) : (
-                  "—"
-                )
-              }
-            />
+          <section className="stagger grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <StatCard icon={FileStack} label="处罚文档" value={stats.documents} meta="入库文档总量" />
+            <StatCard icon={Database} label="结构化案例" value={stats.cases} meta="已抽取案例总量" />
             <StatCard
               icon={ShieldCheck}
               label="保险相关案例"
               value={stats.insurance_cases}
-              meta={
-                insuranceRate != null ? (
-                  <span>
-                    识别准确率{" "}
-                    <strong className="font-display text-lg text-primary">
-                      {insuranceRate.toFixed(1)}%
-                    </strong>
-                  </span>
-                ) : (
-                  "—"
-                )
-              }
+              meta="真实筛选口径"
             />
             <StatCard
               icon={Sparkles}
               label="已向量化"
               value={stats.embedded_cases}
-              meta={
-                <span className="inline-flex items-center gap-1 text-accent">
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                  运行正常
-                </span>
-              }
-            />
-            <StatCard
-              icon={ShieldAlert}
-              label="今日审查"
-              value={Math.max(8, Math.round(stats.insurance_cases * 0.02))}
-              meta={
-                <span>
-                  发现{" "}
-                  <strong className="text-warning">
-                    {Math.max(3, Math.round(stats.insurance_cases * 0.008))}
-                  </strong>{" "}
-                  条高风险语句
-                </span>
-              }
+              meta="可供语义检索"
             />
           </section>
 
-          <RiskAtlasPanel distribution={stats.tag_distribution} />
+          <div id="risk-dict">
+            <RiskAtlasPanel
+              distribution={stats.tag_distribution}
+              tagTree={stats.tag_tree}
+              insuranceCases={stats.insurance_cases}
+              pendingReviewCount={stats.pending_review_count}
+              tagCoverageRate={stats.tag_coverage_rate}
+              entityNormalizeRate={stats.entity_normalize_rate}
+            />
+          </div>
 
           <section className="surface rounded-2xl p-6">
             <h2 className="font-display text-2xl font-semibold">文档解析状态</h2>
@@ -301,35 +247,6 @@ export function OverviewPage() {
               ) : null}
             </ul>
           </section>
-
-          <section className="surface overflow-hidden rounded-2xl">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 px-6 py-4">
-              <h2 className="font-display text-xl font-semibold">动态洞察</h2>
-              <div className="flex gap-1.5" role="tablist" aria-label="洞察轮播">
-                {insightSlides.map((_, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    aria-label={`第 ${i + 1} 屏`}
-                    aria-selected={i === carouselIdx}
-                    onClick={() => setCarouselIdx(i)}
-                    className={[
-                      "h-2.5 w-2.5 rounded-full transition",
-                      i === carouselIdx ? "bg-primary" : "bg-border hover:bg-muted-fg/40",
-                    ].join(" ")}
-                  />
-                ))}
-              </div>
-            </div>
-            <div className="px-6 py-8">
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-fg">
-                {insightSlides[carouselIdx].title}
-              </p>
-              <p className="mt-2 font-display text-2xl font-semibold leading-snug text-foreground sm:text-3xl">
-                {insightSlides[carouselIdx].body}
-              </p>
-            </div>
-          </section>
         </>
       ) : null}
     </div>
@@ -345,7 +262,7 @@ function StatCard({
   icon: typeof FileStack;
   label: string;
   value: number;
-  meta: ReactNode;
+  meta: string;
 }) {
   return (
     <div className="surface rounded-2xl p-5">

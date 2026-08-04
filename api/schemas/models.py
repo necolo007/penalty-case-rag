@@ -84,6 +84,12 @@ class FeedbackRequest(BaseModel):
     reviewer: Optional[str] = None
 
 
+class MaterialHumanReviewRequest(BaseModel):
+    note: Optional[str] = None
+    reviewer: Optional[str] = None
+    status: str = Field("done", pattern="^(done|reviewing|pending)$")
+
+
 # ---------- 文档 / 案例 ----------
 
 class DocumentStatus(BaseModel):

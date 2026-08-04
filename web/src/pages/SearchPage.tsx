@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   Bookmark,
   ChevronDown,
@@ -10,17 +10,18 @@ import {
   SlidersHorizontal,
   Sparkles,
 } from "lucide-react";
-import { api, ApiError } from "../api/client";
-import type { RetrieveResponse } from "../api/types";
-import { SearchResultCard } from "../components/SearchResultCard";
+import { SearchCaseDetailPanel } from "../components/SearchCaseDetailPanel";
+import { SearchResultListItem } from "../components/SearchResultListItem";
 import { SearchUnderstandingPanel } from "../components/SearchUnderstandingPanel";
+import { SearchUnderstandingSummary } from "../components/SearchUnderstandingSummary";
 import { EmptyState, ErrorAlert, TagChip } from "../components/ui";
 import {
   formatHistoryAge,
   loadSearchHistory,
-  pushSearchHistory,
   type SearchHistoryItem,
 } from "../lib/searchHistory";
+import { countHighRelevance } from "../lib/searchInsights";
+import { searchSession, useSearchSession } from "../lib/searchSession";
 import { RISK_ATLAS } from "../lib/riskAtlas";
 
 const CAPABILITY_TAGS = ["语义理解", "多路召回", "智能排序", "证据追溯"];
@@ -33,57 +34,23 @@ const SUGGESTIONS = [
 ] as const;
 
 const CAPABILITIES = [
-  {
-    icon: FileText,
-    title: "文档理解",
-    desc: "解析监管处罚文件",
-  },
-  {
-    icon: ScanSearch,
-    title: "语义搜索",
-    desc: "理解业务表达",
-  },
-  {
-    icon: Scale,
-    title: "案例匹配",
-    desc: "匹配历史处罚",
-  },
-  {
-    icon: Bookmark,
-    title: "证据追溯",
-    desc: "定位处罚依据",
-  },
+  { icon: FileText, title: "文档理解", desc: "解析监管处罚文件" },
+  { icon: ScanSearch, title: "语义搜索", desc: "理解业务表达" },
+  { icon: Scale, title: "案例匹配", desc: "匹配历史处罚" },
+  { icon: Bookmark, title: "证据追溯", desc: "定位处罚依据" },
 ] as const;
 
 export function SearchPage() {
-  const [query, setQuery] = useState("");
-  const [riskType, setRiskType] = useState("");
-  const [regulator, setRegulator] = useState("");
-  const [institutionType, setInstitutionType] = useState("");
-  const [scene, setScene] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [riskLevel, setRiskLevel] = useState("");
-  const [salesRelated, setSalesRelated] = useState("");
-  const [topK, setTopK] = useState(10);
-  const [useReranker, setUseReranker] = useState(true);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const s = useSearchSession();
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<SearchHistoryItem[]>([]);
-
-  const [loading, setLoading] = useState(false);
-  const [understanding, setUnderstanding] = useState(false);
-  const [understandingDone, setUnderstandingDone] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [data, setData] = useState<RetrieveResponse | null>(null);
-  const [pendingCount, setPendingCount] = useState<number | null>(null);
-
   const historyRef = useRef<HTMLDivElement>(null);
-  const minThinkMs = 2200;
+  const detailRef = useRef<HTMLDivElement>(null);
+  const hasResults = Boolean(s.data?.results.length);
 
   useEffect(() => {
     setHistory(loadSearchHistory());
-  }, []);
+  }, [s.data, s.loading]);
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
@@ -95,319 +62,289 @@ export function SearchPage() {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
-  async function runSearch(q: string) {
-    const text = q.trim();
-    if (!text) {
-      setError("请输入检索问题或违规描述");
-      return;
+  // 有缓存结果但 selected 失效时回填首条
+  useEffect(() => {
+    if (!s.data?.results.length) return;
+    const exists = s.data.results.some((r) => r.case_id === s.selectedCaseId);
+    if (!exists) {
+      searchSession.setSelectedCaseId(s.data.results[0].case_id);
     }
+  }, [s.data, s.selectedCaseId]);
 
-    setQuery(text);
-    setLoading(true);
-    setUnderstanding(true);
-    setUnderstandingDone(false);
-    setError(null);
-    setData(null);
-    setPendingCount(null);
+  const selected = useMemo(
+    () => s.data?.results.find((r) => r.case_id === s.selectedCaseId) ?? null,
+    [s.data, s.selectedCaseId],
+  );
 
-    const started = Date.now();
-    pushSearchHistory(text);
-    setHistory(loadSearchHistory());
-
-    try {
-      const res = (await api.retrieve({
-        query_text: text,
-        risk_type: riskType || null,
-        regulator: regulator || null,
-        institution_type: institutionType || null,
-        scene: scene || null,
-        date_from: dateFrom || null,
-        date_to: dateTo || null,
-        top_k: topK,
-        use_reranker: useReranker,
-      })) as RetrieveResponse;
-
-      const poolEstimate = Object.values(res.channel_stats).reduce((a, b) => a + b, 0);
-      setPendingCount(poolEstimate || res.results.length * 8);
-
-      const elapsed = Date.now() - started;
-      if (elapsed < minThinkMs) {
-        await new Promise((r) => window.setTimeout(r, minThinkMs - elapsed));
-      }
-
-      setData(res);
-      setUnderstandingDone(true);
-    } catch (err) {
-      setData(null);
-      setError(err instanceof ApiError ? err.message : "检索失败，请稍后重试");
-      setUnderstandingDone(true);
-    } finally {
-      setLoading(false);
-    }
-  }
+  const highCount = s.data ? countHighRelevance(s.data.results) : 0;
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
-    void runSearch(query);
+    void searchSession.runSearch(s.query);
   }
 
-  const showEmptyLanding = !data && !loading && !understanding;
+  function selectCase(id: string) {
+    searchSession.setSelectedCaseId(id);
+    if (window.matchMedia("(max-width: 1023px)").matches) {
+      window.setTimeout(() => {
+        detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 50);
+    }
+  }
+
+  const showEmptyLanding = !s.data && !s.loading && !s.understanding && !s.understandingDone;
+  const workspaceMode = hasResults || (s.understandingDone && Boolean(s.data));
 
   return (
-    <div className="space-y-8">
-      <header className="rise-in max-w-3xl">
-        <h1 className="font-display text-4xl font-bold text-foreground sm:text-5xl">智能检索</h1>
-        <p className="mt-3 text-base leading-relaxed text-muted-fg">
-          输入业务场景、营销话术或违规描述，系统自动识别风险特征，并匹配历史监管处罚案例，为合规审查提供可追溯依据。
-        </p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {CAPABILITY_TAGS.map((tag, i) => (
-            <span key={tag} className="inline-flex items-center text-xs font-medium text-muted-fg">
-              {i > 0 ? <span className="mx-1.5 text-border">+</span> : null}
-              <TagChip>{tag}</TagChip>
-            </span>
-          ))}
-        </div>
-      </header>
+    <div
+      className={
+        workspaceMode
+          ? "flex min-h-0 flex-col gap-2 lg:h-[calc(100dvh-6.75rem)] lg:overflow-hidden"
+          : "space-y-6"
+      }
+    >
+      {!hasResults && !s.loading && !s.understandingDone ? (
+        <header className="rise-in max-w-3xl">
+          <h1 className="font-display text-4xl font-bold text-foreground sm:text-5xl">相似案例检索</h1>
+          <p className="mt-3 text-base leading-relaxed text-muted-fg">
+            输入业务场景、营销话术或违规描述，系统自动识别风险特征，并匹配历史监管处罚案例，为合规审查提供可追溯依据。
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {CAPABILITY_TAGS.map((tag, i) => (
+              <span key={tag} className="inline-flex items-center text-xs font-medium text-muted-fg">
+                {i > 0 ? <span className="mx-1.5 text-border">+</span> : null}
+                <TagChip>{tag}</TagChip>
+              </span>
+            ))}
+          </div>
+        </header>
+      ) : (
+        <header className="rise-in flex shrink-0 flex-wrap items-baseline justify-between gap-2">
+          <h1 className="font-display text-xl font-bold text-foreground sm:text-2xl">相似案例检索</h1>
+          {s.data ? (
+            <p className="text-xs text-muted-fg">
+              召回 <span className="font-semibold text-foreground">{s.data.results.length}</span> 条
+              {highCount > 0 ? (
+                <>
+                  · 高度相关 <span className="font-semibold text-accent">{highCount}</span>
+                </>
+              ) : null}
+              · {(s.data.took_ms / 1000).toFixed(2)}s
+            </p>
+          ) : (
+            <p className="text-xs text-muted-fg">语义理解 · 多路召回 · 证据可追溯</p>
+          )}
+        </header>
+      )}
 
       <form
         onSubmit={onSubmit}
-        className="surface rise-in rounded-3xl p-5 sm:p-7"
+        className={[
+          "surface rise-in rounded-xl p-3 sm:p-4",
+          hasResults ? "shrink-0" : "",
+        ].join(" ")}
         aria-label="案例检索表单"
       >
-        <label htmlFor="query" className="mb-2 block text-sm font-semibold text-foreground">
-          检索内容
-        </label>
-        <textarea
-          id="query"
-          rows={3}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder='输入营销话术、业务描述或疑似违规表述，例如："购买产品即可领取礼品，收益稳定无风险"'
-          className="w-full resize-y rounded-2xl border border-border bg-white px-4 py-4 text-base leading-relaxed text-foreground outline-none transition focus:border-primary focus:ring-4 focus:ring-primary/15"
-        />
-
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          {SUGGESTIONS.map((s) => (
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+          <div className="min-w-0 flex-1">
+            <label htmlFor="query" className="sr-only">
+              检索内容
+            </label>
+            <textarea
+              id="query"
+              rows={hasResults || s.understandingDone ? 1 : 3}
+              value={s.query}
+              onChange={(e) => searchSession.setQuery(e.target.value)}
+              placeholder='输入营销话术或违规描述，例如："购买产品即可领取礼品，收益稳定无风险"'
+              className={[
+                "w-full resize-y rounded-xl border border-border bg-white px-3 py-2.5 text-sm leading-relaxed text-foreground outline-none transition focus:border-primary focus:ring-4 focus:ring-primary/15",
+                hasResults || s.understandingDone ? "min-h-11 max-h-24" : "",
+              ].join(" ")}
+            />
+          </div>
+          <div className="flex shrink-0 flex-wrap gap-2 lg:flex-col">
             <button
-              key={s.label}
-              type="button"
-              onClick={() => setQuery(s.query)}
-              className="rounded-lg border border-border bg-white px-3 py-1.5 text-xs font-semibold text-foreground transition hover:border-primary/40 hover:bg-primary/5 hover:text-primary"
+              type="submit"
+              disabled={s.loading}
+              className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-5 text-sm font-semibold text-white transition hover:bg-primary-deep disabled:cursor-not-allowed disabled:opacity-60 lg:flex-none lg:min-w-[8.5rem]"
             >
-              {s.label}
+              {s.loading ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              ) : (
+                <Sparkles className="h-4 w-4" aria-hidden />
+              )}
+              {s.loading ? "检索中…" : "检索"}
             </button>
-          ))}
-
-          <div className="relative ml-auto" ref={historyRef}>
             <button
               type="button"
-              onClick={() => setHistoryOpen((o) => !o)}
-              className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border bg-white px-3 text-xs font-semibold text-muted-fg transition hover:border-primary/40 hover:text-primary"
-              aria-expanded={historyOpen}
-              aria-haspopup="listbox"
+              onClick={() => searchSession.toggleAdvancedOpen()}
+              className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl border border-border bg-white px-4 text-sm font-semibold text-foreground transition hover:bg-muted"
+              aria-expanded={s.advancedOpen}
             >
-              <History className="h-3.5 w-3.5" aria-hidden />
-              最近检索
-              <ChevronDown className={`h-3.5 w-3.5 transition ${historyOpen ? "rotate-180" : ""}`} aria-hidden />
+              <SlidersHorizontal className="h-4 w-4 text-primary" aria-hidden />
+              高级
+              <ChevronDown
+                className={`h-3.5 w-3.5 text-muted-fg transition ${s.advancedOpen ? "rotate-180" : ""}`}
+                aria-hidden
+              />
             </button>
-            {historyOpen ? (
-              <ul
-                className="absolute right-0 z-20 mt-1 min-w-[240px] overflow-hidden rounded-xl border border-border bg-white py-1 shadow-[var(--shadow-lift)]"
-                role="listbox"
-              >
-                {history.length === 0 ? (
-                  <li className="px-3 py-2 text-xs text-muted-fg">暂无检索记录</li>
-                ) : (
-                  history.map((h) => (
-                    <li key={`${h.query}-${h.ts}`}>
-                      <button
-                        type="button"
-                        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs transition hover:bg-muted"
-                        onClick={() => {
-                          setHistoryOpen(false);
-                          void runSearch(h.query);
-                        }}
-                      >
-                        <span className="truncate text-foreground">{h.query}</span>
-                        <span className="shrink-0 text-muted-fg">{formatHistoryAge(h.ts)}</span>
-                      </button>
-                    </li>
-                  ))
-                )}
-              </ul>
-            ) : null}
           </div>
         </div>
 
-        <div className="mt-5">
-          <button
-            type="button"
-            onClick={() => setAdvancedOpen((o) => !o)}
-            className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-border bg-white px-4 text-sm font-semibold text-foreground transition hover:border-primary/40 hover:bg-muted"
-            aria-expanded={advancedOpen}
-          >
-            <SlidersHorizontal className="h-4 w-4 text-primary" aria-hidden />
-            高级筛选
-            <ChevronDown className={`h-4 w-4 text-muted-fg transition ${advancedOpen ? "rotate-180" : ""}`} aria-hidden />
-          </button>
-
-          {advancedOpen ? (
-            <div className="mt-4 grid gap-4 rounded-2xl border border-border/70 bg-muted/30 p-4 sm:grid-cols-2 lg:grid-cols-3">
-              <FilterField label="风险类型" id="riskType">
-                <select
-                  id="riskType"
-                  value={riskType}
-                  onChange={(e) => setRiskType(e.target.value)}
-                  className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
+        {!hasResults && !s.understandingDone ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {SUGGESTIONS.map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                onClick={() => searchSession.setQuery(item.query)}
+                className="rounded-lg border border-border bg-white px-3 py-1.5 text-xs font-semibold text-foreground transition hover:border-primary/40 hover:bg-primary/5 hover:text-primary"
+              >
+                {item.label}
+              </button>
+            ))}
+            <div className="relative ml-auto" ref={historyRef}>
+              <button
+                type="button"
+                onClick={() => setHistoryOpen((o) => !o)}
+                className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-border bg-white px-3 text-xs font-semibold text-muted-fg transition hover:border-primary/40 hover:text-primary"
+                aria-expanded={historyOpen}
+              >
+                <History className="h-3.5 w-3.5" aria-hidden />
+                最近检索
+                <ChevronDown className={`h-3.5 w-3.5 transition ${historyOpen ? "rotate-180" : ""}`} aria-hidden />
+              </button>
+              {historyOpen ? (
+                <ul
+                  className="absolute right-0 z-20 mt-1 min-w-[240px] overflow-hidden rounded-xl border border-border bg-white py-1 shadow-[var(--shadow-lift)]"
+                  role="listbox"
                 >
-                  <option value="">全部</option>
-                  {RISK_ATLAS.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.id} {r.name}
-                    </option>
-                  ))}
-                </select>
-              </FilterField>
-
-              <FilterField label="时间范围 · 起" id="dateFrom">
-                <input
-                  id="dateFrom"
-                  type="date"
-                  value={dateFrom}
-                  onChange={(e) => setDateFrom(e.target.value)}
-                  className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
-                />
-              </FilterField>
-
-              <FilterField label="时间范围 · 止" id="dateTo">
-                <input
-                  id="dateTo"
-                  type="date"
-                  value={dateTo}
-                  onChange={(e) => setDateTo(e.target.value)}
-                  className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
-                />
-              </FilterField>
-
-              <FilterField label="监管机构" id="regulator">
-                <input
-                  id="regulator"
-                  value={regulator}
-                  onChange={(e) => setRegulator(e.target.value)}
-                  placeholder="如 国家金融监督管理总局"
-                  className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
-                />
-              </FilterField>
-
-              <FilterField label="案例来源 / 业务场景" id="scene">
-                <select
-                  id="scene"
-                  value={scene}
-                  onChange={(e) => setScene(e.target.value)}
-                  className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
-                >
-                  <option value="">全部场景</option>
-                  <option value="营销宣传">营销宣传</option>
-                  <option value="销售话术">销售话术</option>
-                  <option value="产品说明">产品说明</option>
-                  <option value="培训材料">培训材料</option>
-                </select>
-              </FilterField>
-
-              <FilterField label="机构类型" id="institutionType">
-                <select
-                  id="institutionType"
-                  value={institutionType}
-                  onChange={(e) => setInstitutionType(e.target.value)}
-                  className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
-                >
-                  <option value="">全部机构</option>
-                  <option value="寿险公司">寿险公司</option>
-                  <option value="财险公司">财险公司</option>
-                  <option value="分支机构">分支机构</option>
-                  <option value="保险中介">保险中介</option>
-                </select>
-              </FilterField>
-
-              <FilterField label="风险等级（展示偏好）" id="riskLevel">
-                <select
-                  id="riskLevel"
-                  value={riskLevel}
-                  onChange={(e) => setRiskLevel(e.target.value)}
-                  className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
-                >
-                  <option value="">不限</option>
-                  <option value="high">高风险优先</option>
-                  <option value="medium">中风险</option>
-                  <option value="low">低风险</option>
-                </select>
-              </FilterField>
-
-              <FilterField label="是否涉及销售行为" id="salesRelated">
-                <select
-                  id="salesRelated"
-                  value={salesRelated}
-                  onChange={(e) => setSalesRelated(e.target.value)}
-                  className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
-                >
-                  <option value="">不限</option>
-                  <option value="yes">是</option>
-                  <option value="no">否</option>
-                </select>
-              </FilterField>
-
-              <FilterField label="返回条数" id="topK">
-                <input
-                  id="topK"
-                  type="number"
-                  min={1}
-                  max={50}
-                  value={topK}
-                  onChange={(e) => setTopK(Number(e.target.value) || 10)}
-                  className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
-                />
-              </FilterField>
-
-              <div className="flex items-end sm:col-span-2 lg:col-span-3">
-                <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-xl border border-border bg-white px-3 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={useReranker}
-                    onChange={(e) => setUseReranker(e.target.checked)}
-                    className="h-4 w-4 accent-primary"
-                  />
-                  启用精排 Reranker
-                </label>
-              </div>
+                  {history.length === 0 ? (
+                    <li className="px-3 py-2 text-xs text-muted-fg">暂无检索记录</li>
+                  ) : (
+                    history.map((h) => (
+                      <li key={`${h.query}-${h.ts}`}>
+                        <button
+                          type="button"
+                          className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs transition hover:bg-muted"
+                          onClick={() => {
+                            setHistoryOpen(false);
+                            void searchSession.runSearch(h.query);
+                          }}
+                        >
+                          <span className="truncate text-foreground">{h.query}</span>
+                          <span className="shrink-0 text-muted-fg">{formatHistoryAge(h.ts)}</span>
+                        </button>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              ) : null}
             </div>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
 
-        <div className="mt-6 flex flex-wrap items-center gap-3">
-          <button
-            type="submit"
-            disabled={loading}
-            className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-primary px-6 text-sm font-semibold text-white transition hover:bg-primary-deep disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {loading ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-            ) : (
-              <Sparkles className="h-4 w-4" aria-hidden />
-            )}
-            {loading ? "理解并检索中…" : "检索相似案例"}
-          </button>
-          {data ? (
-            <span className="text-sm text-muted-fg">
-              耗时 {data.took_ms} ms · 返回 {data.results.length} 条
-            </span>
-          ) : null}
-        </div>
+        {s.advancedOpen ? (
+          <div className="mt-4 grid gap-4 rounded-2xl border border-border/70 bg-muted/30 p-4 sm:grid-cols-2 lg:grid-cols-3">
+            <FilterField label="风险类型" id="riskType">
+              <select
+                id="riskType"
+                value={s.riskType}
+                onChange={(e) => searchSession.setRiskType(e.target.value)}
+                className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
+              >
+                <option value="">全部</option>
+                {RISK_ATLAS.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.id} {r.name}
+                  </option>
+                ))}
+              </select>
+            </FilterField>
+            <FilterField label="时间范围 · 起" id="dateFrom">
+              <input
+                id="dateFrom"
+                type="date"
+                value={s.dateFrom}
+                onChange={(e) => searchSession.setDateFrom(e.target.value)}
+                className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
+              />
+            </FilterField>
+            <FilterField label="时间范围 · 止" id="dateTo">
+              <input
+                id="dateTo"
+                type="date"
+                value={s.dateTo}
+                onChange={(e) => searchSession.setDateTo(e.target.value)}
+                className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
+              />
+            </FilterField>
+            <FilterField label="监管机构" id="regulator">
+              <input
+                id="regulator"
+                value={s.regulator}
+                onChange={(e) => searchSession.setRegulator(e.target.value)}
+                placeholder="如 国家金融监督管理总局"
+                className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
+              />
+            </FilterField>
+            <FilterField label="案例来源 / 业务场景" id="scene">
+              <select
+                id="scene"
+                value={s.scene}
+                onChange={(e) => searchSession.setScene(e.target.value)}
+                className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
+              >
+                <option value="">全部场景</option>
+                <option value="营销宣传">营销宣传</option>
+                <option value="销售话术">销售话术</option>
+                <option value="产品说明">产品说明</option>
+                <option value="培训材料">培训材料</option>
+              </select>
+            </FilterField>
+            <FilterField label="机构类型" id="institutionType">
+              <select
+                id="institutionType"
+                value={s.institutionType}
+                onChange={(e) => searchSession.setInstitutionType(e.target.value)}
+                className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
+              >
+                <option value="">全部机构</option>
+                <option value="寿险公司">寿险公司</option>
+                <option value="财险公司">财险公司</option>
+                <option value="分支机构">分支机构</option>
+                <option value="保险中介">保险中介</option>
+              </select>
+            </FilterField>
+            <FilterField label="返回条数" id="topK">
+              <input
+                id="topK"
+                type="number"
+                min={1}
+                max={50}
+                value={s.topK}
+                onChange={(e) => searchSession.setTopK(Number(e.target.value) || 10)}
+                className="min-h-11 w-full rounded-xl border border-border bg-white px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10"
+              />
+            </FilterField>
+            <div className="flex items-end sm:col-span-2 lg:col-span-3">
+              <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-xl border border-border bg-white px-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={s.useReranker}
+                  onChange={(e) => searchSession.setUseReranker(e.target.checked)}
+                  className="h-4 w-4 accent-primary"
+                />
+                启用精排 Reranker
+              </label>
+            </div>
+          </div>
+        ) : null}
       </form>
 
       {showEmptyLanding ? (
         <section className="rise-in rounded-3xl border border-border/60 bg-white/70 p-6 sm:p-8">
-          <h2 className="font-display text-2xl font-semibold text-foreground">智能检索能力</h2>
+          <h2 className="font-display text-2xl font-semibold text-foreground">相似案例检索能力</h2>
           <p className="mt-2 max-w-2xl text-sm text-muted-fg">
             从监管文书到业务话术，多路召回并精排相似处罚案例，输出可解释、可溯源的匹配证据。
           </p>
@@ -428,71 +365,75 @@ export function SearchPage() {
         </section>
       ) : null}
 
-      {error ? <ErrorAlert message={error} /> : null}
+      {s.error ? <ErrorAlert message={s.error} /> : null}
 
-      {(understanding || understandingDone) && !error ? (
+      {s.understanding && !s.understandingDone && !s.error ? (
         <SearchUnderstandingPanel
-          active={understanding && !understandingDone}
-          finished={understandingDone}
-          query={query}
-          predictedRiskIds={data?.predicted_risk_ids ?? []}
-          predictedCnTags={data?.predicted_cn_tags ?? []}
-          resultCount={pendingCount}
-          topK={topK}
+          active
+          finished={false}
+          query={s.query}
+          predictedRiskIds={s.data?.predicted_risk_ids ?? []}
+          predictedCnTags={s.data?.predicted_cn_tags ?? []}
+          resultCount={s.pendingCount}
+          topK={s.topK}
         />
       ) : null}
 
-      {data ? (
-        <section className="space-y-5">
-          {(data.predicted_cn_tags?.length || data.predicted_risk_ids.length > 0 || Object.keys(data.channel_stats).length > 0) ? (
-            <div className="space-y-2 rounded-2xl border border-border/70 bg-white/80 px-4 py-3 text-xs">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-semibold text-muted-fg">预判风险（27类）</span>
-                {(data.predicted_cn_tags?.length ? data.predicted_cn_tags : []).map((tag) => (
-                  <TagChip key={tag}>{tag}</TagChip>
-                ))}
-                {!data.predicted_cn_tags?.length ? (
-                  <span className="text-muted-fg">暂无细粒度标签，已用内部大类召回</span>
-                ) : null}
-              </div>
-              {data.predicted_risk_ids.length > 0 ? (
-                <div className="flex flex-wrap items-center gap-2 text-muted-fg">
-                  <span className="font-medium">内部召回大类</span>
-                  {data.predicted_risk_ids.map((id) => (
-                    <span key={id} className="rounded-md bg-muted px-2 py-0.5 font-mono">
-                      {id}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-              <div className="flex flex-wrap gap-2">
-                {Object.entries(data.channel_stats).map(([ch, n]) => (
-                  <span key={ch} className="rounded-md bg-muted px-2 py-0.5 text-muted-fg">
-                    {ch}: {n}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ) : null}
+      {s.understandingDone && s.data && !s.error ? (
+        <div className="shrink-0">
+          <SearchUnderstandingSummary
+            query={s.query}
+            predictedRiskIds={s.data.predicted_risk_ids}
+            predictedCnTags={s.data.predicted_cn_tags ?? []}
+          />
+        </div>
+      ) : null}
 
-          {data.results.length === 0 ? (
+      {s.data ? (
+        <section className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
+          {s.data.results.length === 0 ? (
             <EmptyState
               title="未找到相似案例"
               description="可尝试更具体的违规行为关键词，或调整高级筛选条件。"
             />
           ) : (
-            <div className="stagger space-y-5">
-              {data.results.map((r) => (
-                <SearchResultCard
-                  key={r.case_id}
-                  item={r}
-                  userQuery={data.query}
-                  rewrittenQuery={data.rewritten_query}
-                  predictedRiskIds={data.predicted_risk_ids}
-                  predictedCnTags={data.predicted_cn_tags ?? []}
-                  onSearchExpanded={(q) => void runSearch(q)}
-                />
-              ))}
+            <div className="grid min-h-0 flex-1 gap-3 overflow-hidden lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+              <div
+                className="flex min-h-0 flex-col gap-2 overflow-hidden"
+                role="listbox"
+                aria-label="相似案例列表"
+              >
+                <h2 className="shrink-0 px-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-fg">
+                  Top-{s.data.results.length} 相关案例
+                </h2>
+                <div className="stagger min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-0.5">
+                  {s.data.results.map((r) => (
+                    <SearchResultListItem
+                      key={r.case_id}
+                      item={r}
+                      userQuery={s.data!.query}
+                      predictedCnTags={s.data!.predicted_cn_tags ?? []}
+                      predictedRiskIds={s.data!.predicted_risk_ids}
+                      selected={r.case_id === s.selectedCaseId}
+                      onSelect={() => selectCase(r.case_id)}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div ref={detailRef} className="min-h-[18rem] overflow-hidden lg:min-h-0 lg:h-full">
+                {selected ? (
+                  <SearchCaseDetailPanel
+                    item={selected}
+                    userQuery={s.data.query}
+                    predictedCnTags={s.data.predicted_cn_tags ?? []}
+                  />
+                ) : (
+                  <div className="surface flex h-full min-h-[14rem] items-center justify-center rounded-xl p-6 text-sm text-muted-fg">
+                    选择左侧案例查看匹配证据
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </section>

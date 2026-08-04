@@ -185,4 +185,13 @@ export const api = {
       body: fd,
     });
   },
+
+  saveMaterialHumanReview: (
+    materialId: string,
+    body: { note?: string; reviewer?: string; status?: string },
+  ) =>
+    request<{ material_id: string; review_status: string }>(
+      `/review/material/${encodeURIComponent(materialId)}/human-review`,
+      jsonInit("POST", body),
+    ),
 };

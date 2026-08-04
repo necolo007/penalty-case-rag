@@ -17,6 +17,7 @@ from engine.retrieval.hybrid_retriever import HybridRetriever
 from engine.review.generator import ReviewGenerator
 from engine.review.risk_locator import RiskSentence, RiskSentenceLocator
 from engine.review.segmenter import segment_text
+from pipeline.parser.ocr_normalize import normalize_ocr_text
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +48,14 @@ class MaterialReviewReport:
     sentence_reviews: list[SentenceReview]
     overall_suggestion: str
     scene: str | None = None
+    source_file: str | None = None
+    raw_text: str | None = None
 
     def to_dict(self) -> dict:
         """同时输出后端内部字段与前端兼容字段（risk_sentences / summary）。"""
         payload = asdict(self)
         payload["summary"] = self.overall_suggestion
+        payload["file_name"] = self.source_file
         payload["risk_sentences"] = [
             {
                 "text": sr.sentence_text,
@@ -67,8 +71,40 @@ class MaterialReviewReport:
                 "detection_method": sr.detection_method,
                 "detection_reasons": sr.detection_reasons,
                 "retrieved_cases": sr.retrieved_cases,
+                # 报告单卡关键字段：取 Top1 命中案例的核心信息
+                "hit_case_id": (sr.retrieved_cases[0].get("case_id") if sr.retrieved_cases else None),
+                "hit_penalty_doc_no": (
+                    sr.retrieved_cases[0].get("penalty_doc_no") if sr.retrieved_cases else None
+                ),
+                "hit_party_name": (
+                    sr.retrieved_cases[0].get("party_name") if sr.retrieved_cases else None
+                ),
+                "case_key_field": (
+                    (sr.retrieved_cases[0].get("violation_behavior") or "")[:80]
+                    if sr.retrieved_cases else None
+                ),
+                "match_reason": (
+                    sr.retrieved_cases[0].get("match_reason") if sr.retrieved_cases else None
+                ),
+                "source_file": self.source_file or (
+                    sr.retrieved_cases[0].get("source_file") if sr.retrieved_cases else None
+                ),
             }
             for sr in self.sentence_reviews
+        ]
+        # 按段落粗分多案例块，便于同一材料多主体时分组展示
+        groups: dict[int, list[dict]] = {}
+        for item in payload["risk_sentences"]:
+            key = int(item.get("paragraph_idx") or 0)
+            groups.setdefault(key, []).append(item)
+        payload["case_blocks"] = [
+            {
+                "block_id": f"block-{idx + 1}",
+                "paragraph_idx": para_idx,
+                "label": f"风险段落 {idx + 1}",
+                "risk_sentences": items,
+            }
+            for idx, (para_idx, items) in enumerate(sorted(groups.items()))
         ]
         return payload
 
@@ -93,6 +129,7 @@ class MaterialReviewer:
     async def review(self, raw_text: str, *, scene: str | None = None,
                      source_type: str = "paste", file_name: str | None = None) -> MaterialReviewReport:
         material_id = str(uuid.uuid4())
+        raw_text = normalize_ocr_text(raw_text)
 
         # 落库材料记录
         await self.pool.execute(
@@ -105,6 +142,8 @@ class MaterialReviewer:
 
         try:
             report = await self._do_review(material_id, raw_text, scene)
+            report.source_file = file_name
+            report.raw_text = raw_text
             await self.pool.execute(
                 """
                 UPDATE material_reviews
@@ -122,6 +161,39 @@ class MaterialReviewer:
                 material_id,
             )
             raise
+
+    async def save_human_review(
+        self,
+        material_id: str,
+        *,
+        reviewer: str | None = None,
+        note: str | None = None,
+        status: str = "done",
+    ) -> dict:
+        """人工复核落库：更新材料审查状态与建议附注。"""
+        row = await self.pool.fetchrow(
+            "SELECT material_id, suggestion FROM material_reviews WHERE material_id = $1::uuid",
+            material_id,
+        )
+        if not row:
+            raise ValueError("material not found")
+        merged = row["suggestion"] or ""
+        if note:
+            merged = (merged + "\n\n【人工复核】" + note).strip()
+        await self.pool.execute(
+            """
+            UPDATE material_reviews
+            SET review_status = $2, suggestion = $3
+            WHERE material_id = $1::uuid
+            """,
+            material_id, status, merged,
+        )
+        return {
+            "material_id": material_id,
+            "review_status": status,
+            "reviewer": reviewer or "",
+            "note": note or "",
+        }
 
     async def _do_review(self, material_id: str, raw_text: str,
                          scene: str | None) -> MaterialReviewReport:

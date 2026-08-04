@@ -14,8 +14,8 @@ import { useReviewSession } from "../lib/reviewSession";
 
 const mainLinks = [
   { to: "/", label: "智能驾驶舱", icon: LayoutDashboard, end: true },
+  { to: "/search", label: "相似案例检索", icon: Search },
   { to: "/review", label: "智能审查", icon: Scale },
-  { to: "/search", label: "智能检索", icon: Search },
   { to: "/cases", label: "处罚案例库", icon: FolderOpen },
   { to: "/documents", label: "数据入库", icon: FileText },
 ];
@@ -183,10 +183,18 @@ export function AppLayout() {
             </div>
           </div>
         ) : null}
-        <main id="main" className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-10">
+        <main
+          id="main"
+          className={[
+            "mx-auto max-w-7xl px-4 sm:px-6",
+            location.pathname.startsWith("/search")
+              ? "py-4 sm:py-5"
+              : "py-8 sm:py-10",
+          ].join(" ")}
+        >
           <Outlet />
         </main>
-        <footer className="border-t border-border/60 py-6 text-center text-xs text-muted-fg">
+        <footer className="border-t border-border/60 py-4 text-center text-xs text-muted-fg">
           保险监管处罚案例知识库 · 四路混合召回 + RRF + 精排
         </footer>
       </div>

@@ -24,6 +24,7 @@ from engine.llm.prompts import CASE_SUMMARY_PROMPT
 from pipeline.extraction.extractor import ExtractorEngine
 from pipeline.extraction.schema import ExtractedCase
 from pipeline.parser.base import RawDocument
+from pipeline.parser.ocr_normalize import normalize_ocr_text
 from pipeline.parser.router import DocumentRouter
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,9 @@ class IngestOrchestrator:
         if not parse_result.success:
             await self._set_status(doc.file_id, "failed", error=parse_result.error)
             return {"status": "failed", "file_id": doc.file_id, "error": parse_result.error}
+
+        # 扫描公示表常见「逐字重复」OCR 噪声，入库前归一化
+        parse_result.markdown = normalize_ocr_text(parse_result.markdown)
 
         raw_text_path = self._write_raw_text(doc.file_id, parse_result.markdown)
         await self.pool.execute(

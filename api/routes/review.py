@@ -9,7 +9,12 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from api.dependencies import get_generator, get_material_reviewer, get_pool, get_retriever
-from api.schemas.models import FeedbackRequest, MaterialReviewRequest, ReviewGenerateRequest
+from api.schemas.models import (
+    FeedbackRequest,
+    MaterialHumanReviewRequest,
+    MaterialReviewRequest,
+    ReviewGenerateRequest,
+)
 from engine.retrieval.base import SearchQuery
 from pipeline.parser.base import RawDocument
 from pipeline.parser.simple_parsers import PlainTextParser, PPTParser, WordParser
@@ -156,6 +161,26 @@ async def get_material_report(material_id: str, pool=Depends(get_pool)):
         **dict(material),
         "risk_sentence_details": [dict(s) for s in sentences],
     }
+
+
+@router.post("/material/{material_id}/human-review")
+async def save_material_human_review(
+    material_id: str,
+    body: MaterialHumanReviewRequest,
+    reviewer=Depends(get_material_reviewer),
+):
+    """人工复核落库（复核建议 + 完成状态）"""
+    if reviewer is None:
+        raise HTTPException(503, detail="material reviewer unavailable")
+    try:
+        return await reviewer.save_human_review(
+            material_id,
+            reviewer=body.reviewer,
+            note=body.note,
+            status=body.status,
+        )
+    except ValueError:
+        raise HTTPException(404, detail="material not found") from None
 
 
 @router.get("/{review_id}")

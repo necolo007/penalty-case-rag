@@ -73,9 +73,10 @@ function loadPersisted(): Partial<ReviewSessionState> {
     if (parsed.feedback) {
       const mapped: Record<string, FeedbackVerdict> = {};
       for (const [k, v] of Object.entries(parsed.feedback)) {
-        if (v === "pass" || v === "agree") mapped[k] = "agree";
-        else if (v === "wrong" || v === "disagree") mapped[k] = "disagree";
-        else if (v === "partial") mapped[k] = "partial";
+        const raw = String(v);
+        if (raw === "pass" || raw === "agree") mapped[k] = "agree";
+        else if (raw === "wrong" || raw === "disagree") mapped[k] = "disagree";
+        else if (raw === "partial") mapped[k] = "partial";
       }
       parsed.feedback = mapped;
     }
@@ -209,6 +210,31 @@ export const reviewSession = {
       thinkHint: "",
       justFinished: false,
     }),
+  saveMaterialHumanReview: async (note: string) => {
+    const materialId = state.materialReport?.material_id;
+    if (!materialId) {
+      patch({ error: "缺少 material_id，无法保存复核" });
+      return false;
+    }
+    patch({ feedbackSaving: { ...state.feedbackSaving, human: true }, error: null });
+    try {
+      await api.saveMaterialHumanReview(materialId, {
+        note,
+        reviewer: "web-ui",
+        status: "done",
+      });
+      return true;
+    } catch (err) {
+      patch({
+        error: err instanceof ApiError ? err.message : "人工复核保存失败",
+      });
+      return false;
+    } finally {
+      const nextSaving = { ...state.feedbackSaving };
+      delete nextSaving.human;
+      patch({ feedbackSaving: nextSaving });
+    }
+  },
   /** 单句审查 — 请求在模块级继续，切页不中断 */
   startSentenceReview: async () => {
     const query = state.query.trim();
