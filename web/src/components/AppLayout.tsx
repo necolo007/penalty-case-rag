@@ -1,6 +1,5 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
-  FileText,
   FolderOpen,
   LayoutDashboard,
   Loader2,
@@ -16,8 +15,7 @@ const mainLinks = [
   { to: "/", label: "智能驾驶舱", icon: LayoutDashboard, end: true },
   { to: "/search", label: "相似案例检索", icon: Search },
   { to: "/review", label: "智能审查", icon: Scale },
-  { to: "/cases", label: "处罚案例库", icon: FolderOpen },
-  { to: "/documents", label: "数据入库", icon: FileText },
+  { to: "/knowledge", label: "案例知识库", icon: FolderOpen },
 ];
 
 export function AppLayout() {
@@ -75,7 +73,22 @@ export function AppLayout() {
           </p>
           <div className="space-y-1">
             {mainLinks.map(({ to, label, icon: Icon, end }) => (
-              <NavLink key={to} to={to} end={end} className={navClass} onClick={() => setMobileOpen(false)}>
+              <NavLink
+                key={to}
+                to={to}
+                end={end}
+                className={({ isActive }) =>
+                  navClass({
+                    isActive:
+                      isActive ||
+                      (to === "/knowledge" &&
+                        (location.pathname.startsWith("/cases/") ||
+                          location.pathname === "/cases" ||
+                          location.pathname === "/documents")),
+                  })
+                }
+                onClick={() => setMobileOpen(false)}
+              >
                 <Icon className="h-4 w-4 shrink-0" aria-hidden />
                 <span className="flex-1 text-left">{label}</span>
                 {to === "/review" && reviewBusy ? (

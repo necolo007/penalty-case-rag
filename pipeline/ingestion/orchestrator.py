@@ -4,6 +4,9 @@
   Stage 2  字段抽取 → 规则初筛（宽松口径）→ 候选标记
   Stage 3  三维词典精筛 + 标签归类 + 摘要 + 向量化 → penalty_cases + case_embeddings（事务）
 
+进度写入 documents.parse_metadata：
+  stage / progress_pct / cases_done / cases_total —— 供 API 推导五步 parse_stages。
+
 jsonl 导出由 pipeline/export 从 DB 按需生成，不在入库主链路上阻塞。
 """
 
@@ -28,6 +31,13 @@ from pipeline.parser.ocr_normalize import normalize_ocr_text
 from pipeline.parser.router import DocumentRouter
 
 logger = logging.getLogger(__name__)
+
+# 与前端 / API 五步进度 key 对齐
+PARSE_STAGE_DOC = "doc"
+PARSE_STAGE_OCR = "ocr"
+PARSE_STAGE_EXTRACT = "extract"
+PARSE_STAGE_ENTITY = "entity"
+PARSE_STAGE_REVIEW = "review"
 
 
 class IngestOrchestrator:
@@ -56,32 +66,59 @@ class IngestOrchestrator:
     async def ingest_document(self, doc: RawDocument, *, regulator: str | None = None,
                               publish_date: str | None = None) -> dict:
         # ---- Stage 1: 解析 ----
-        await self._set_status(doc.file_id, "parsing")
+        await self._set_progress(
+            doc.file_id,
+            status="parsing",
+            stage=PARSE_STAGE_DOC,
+            progress_pct=5,
+        )
+        await self._set_progress(
+            doc.file_id,
+            stage=PARSE_STAGE_OCR,
+            progress_pct=12,
+        )
         parse_result = self.router.parse(doc)
 
         if not parse_result.success:
-            await self._set_status(doc.file_id, "failed", error=parse_result.error)
+            await self._set_progress(
+                doc.file_id,
+                status="failed",
+                stage=PARSE_STAGE_OCR,
+                progress_pct=20,
+                error=parse_result.error,
+            )
             return {"status": "failed", "file_id": doc.file_id, "error": parse_result.error}
 
         # 扫描公示表常见「逐字重复」OCR 噪声，入库前归一化
         parse_result.markdown = normalize_ocr_text(parse_result.markdown)
 
         raw_text_path = self._write_raw_text(doc.file_id, parse_result.markdown)
+        parse_meta = {
+            k: v for k, v in parse_result.metadata.items() if k != "records"
+        }
+        parse_meta.update({
+            "stage": PARSE_STAGE_OCR,
+            "progress_pct": 28,
+        })
         await self.pool.execute(
             """
             UPDATE documents
-            SET raw_text = $2, raw_text_path = $3, parse_metadata = $4::jsonb,
+            SET raw_text = $2,
+                raw_text_path = $3,
+                parse_metadata = COALESCE(parse_metadata, '{}'::jsonb) || $4::jsonb,
                 updated_at = NOW()
             WHERE file_id = $1
             """,
             doc.file_id, parse_result.markdown, raw_text_path,
-            json.dumps(
-                {k: v for k, v in parse_result.metadata.items() if k != "records"},
-                ensure_ascii=False,
-            ),
+            json.dumps(parse_meta, ensure_ascii=False),
         )
 
         # ---- Stage 2: 字段抽取 + 规则初筛 ----
+        await self._set_progress(
+            doc.file_id,
+            stage=PARSE_STAGE_EXTRACT,
+            progress_pct=35,
+        )
         cases = self.extractor.extract(parse_result, file_id=doc.file_id, source_file=doc.file_name)
         for case in cases:
             candidate, reasons = self.insurance_filter.is_candidate(
@@ -90,8 +127,28 @@ class IngestOrchestrator:
             case.is_insurance_candidate = candidate
             case.candidate_reasons = reasons
 
+        await self._set_progress(
+            doc.file_id,
+            stage=PARSE_STAGE_ENTITY,
+            progress_pct=52,
+            cases_total=len(cases),
+            cases_done=0,
+        )
+
         # ---- Stage 3: 精筛 + 标签 + 摘要 + 向量化 + 入库 ----
+        # 重试/重复入库前清掉本文件旧案例，避免 case_id 撞主键与脏数据残留
+        await self._clear_cases_for_file(doc.file_id)
+
+        await self._set_progress(
+            doc.file_id,
+            stage=PARSE_STAGE_REVIEW,
+            progress_pct=58,
+            cases_total=len(cases),
+            cases_done=0,
+        )
+
         stored = 0
+        total = len(cases)
         for idx, case in enumerate(cases):
             score = self.insurance_filter.score(
                 case.party_name, case.violation_behavior, case.legal_basis,
@@ -110,10 +167,56 @@ class IngestOrchestrator:
             await self._store_case(case_id, case, regulator=regulator, publish_date=publish_date)
             stored += 1
 
-        await self._set_status(doc.file_id, "done")
+            # 入库循环中按完成比例上报，避免长任务 UI 卡住
+            done_n = idx + 1
+            if total <= 1 or done_n == total or done_n % max(1, total // 8) == 0:
+                pct = 58 + int(37 * done_n / max(total, 1))
+                await self._set_progress(
+                    doc.file_id,
+                    stage=PARSE_STAGE_REVIEW,
+                    progress_pct=min(95, pct),
+                    cases_done=done_n,
+                    cases_total=total,
+                )
+
+        await self._set_progress(
+            doc.file_id,
+            status="done",
+            stage=PARSE_STAGE_REVIEW,
+            progress_pct=100,
+            cases_done=stored,
+            cases_total=total,
+        )
         return {"status": "completed", "file_id": doc.file_id, "case_count": stored}
 
     # ---------- helpers ----------
+
+    async def _clear_cases_for_file(self, file_id: str) -> None:
+        """删除某文档已生成的案例及相关引用（embeddings / subject 有 CASCADE）。"""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                case_ids = [
+                    r["case_id"]
+                    for r in await conn.fetch(
+                        "SELECT case_id FROM penalty_cases WHERE file_id = $1",
+                        file_id,
+                    )
+                ]
+                if not case_ids:
+                    return
+                # review_case_refs 无 ON DELETE CASCADE
+                await conn.execute(
+                    "DELETE FROM review_case_refs WHERE case_id = ANY($1::text[])",
+                    case_ids,
+                )
+                await conn.execute(
+                    "DELETE FROM penalty_cases WHERE file_id = $1",
+                    file_id,
+                )
+                logger.info(
+                    "Cleared %d existing case(s) for file_id=%s before re-ingest",
+                    len(case_ids), file_id,
+                )
 
     def _write_raw_text(self, file_id: str, text: str) -> str:
         raw_dir = self.data_dir / "raw_text"
@@ -141,9 +244,9 @@ class IngestOrchestrator:
             return f"{case.party_name}因{case.violation_behavior[:40]}被处罚。"
 
     async def _next_case_id(self) -> str:
-        from core.ids import next_case_id
+        from core.ids import allocate_unique_case_id
 
-        return await next_case_id(self.pool)
+        return await allocate_unique_case_id(self.pool)
 
     async def _store_case(self, case_id: str, case: ExtractedCase, *,
                           regulator: str | None, publish_date: str | None) -> None:
@@ -155,6 +258,33 @@ class IngestOrchestrator:
         if case.is_insurance_related and embedding_text.strip():
             embedding = self.embedder.encode_documents([embedding_text])[0]
 
+        last_err: Exception | None = None
+        cid = case_id
+        for attempt in range(8):
+            try:
+                await self._insert_case_row(
+                    cid, case, regulator=regulator, publish_date=publish_date,
+                    embedding=embedding,
+                )
+                return
+            except asyncpg.UniqueViolationError as e:
+                last_err = e
+                logger.warning(
+                    "unique violation storing case %s (attempt %d), reallocating: %s",
+                    cid, attempt + 1, e,
+                )
+                cid = await self._next_case_id()
+        raise RuntimeError(f"store_case failed after retries: {last_err}") from last_err
+
+    async def _insert_case_row(
+        self,
+        case_id: str,
+        case: ExtractedCase,
+        *,
+        regulator: str | None,
+        publish_date: str | None,
+        embedding: list[float] | None,
+    ) -> None:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -204,10 +334,48 @@ class IngestOrchestrator:
                 )
 
     async def _set_status(self, file_id: str, status: str, error: str | None = None) -> None:
+        await self._set_progress(file_id, status=status, error=error)
+
+    async def _set_progress(
+        self,
+        file_id: str,
+        *,
+        status: str | None = None,
+        stage: str | None = None,
+        progress_pct: int | None = None,
+        cases_done: int | None = None,
+        cases_total: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        """更新 parse_status，并合并写入 parse_metadata 进度字段。"""
+        patch: dict = {}
+        if stage is not None:
+            patch["stage"] = stage
+        if progress_pct is not None:
+            patch["progress_pct"] = max(0, min(100, int(progress_pct)))
+        if cases_done is not None:
+            patch["cases_done"] = int(cases_done)
+        if cases_total is not None:
+            patch["cases_total"] = int(cases_total)
+        if status == "failed" and stage is not None:
+            patch["failed_stage"] = stage
+
         await self.pool.execute(
             """
-            UPDATE documents SET parse_status = $2, parse_error = $3, updated_at = NOW()
+            UPDATE documents
+            SET parse_status = COALESCE($2, parse_status),
+                parse_error = CASE
+                    WHEN $2 IN ('parsing', 'pending', 'done') THEN NULL
+                    WHEN $3::boolean THEN $4
+                    ELSE parse_error
+                END,
+                parse_metadata = COALESCE(parse_metadata, '{}'::jsonb) || $5::jsonb,
+                updated_at = NOW()
             WHERE file_id = $1
             """,
-            file_id, status, error,
+            file_id,
+            status,
+            error is not None,
+            error,
+            json.dumps(patch, ensure_ascii=False),
         )

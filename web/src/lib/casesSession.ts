@@ -1,12 +1,12 @@
 /**
- * 处罚案例库会话：模块级状态 + sessionStorage。
- * 切页保留筛选、分页、视图与列表结果；进行中的加载不会因路由卸载而丢弃。
+ * 案例知识库会话：模块级状态 + sessionStorage。
+ * 切页保留筛选、分页、视图、三级队列与列表结果。
  */
 import { useSyncExternalStore } from "react";
 import { api, ApiError } from "../api/client";
-import type { CaseListItem, Paginated } from "../api/types";
+import type { CaseListItem, CaseQueue, Paginated } from "../api/types";
 
-const STORAGE_KEY = "anku-cases-session-v1";
+const STORAGE_KEY = "anku-knowledge-cases-v1";
 
 export type CasesViewMode = "table" | "card";
 export type CasesSortBy =
@@ -21,7 +21,8 @@ export type CasesFilterParams = {
   keyword?: string;
   regulator?: string;
   risk_type?: string;
-  is_insurance_related?: boolean;
+  queue?: CaseQueue;
+  file_id?: string;
   date_from?: string;
   date_to?: string;
   sort_by: CasesSortBy;
@@ -34,7 +35,8 @@ export type CasesSessionState = {
   riskType: string;
   dateFrom: string;
   dateTo: string;
-  insuranceOnly: boolean;
+  queue: CaseQueue;
+  fileId: string;
   viewMode: CasesViewMode;
   sortBy: CasesSortBy;
   sortOrder: "asc" | "desc";
@@ -44,6 +46,8 @@ export type CasesSessionState = {
   error: string | null;
   selected: string[];
   exporting: boolean;
+  actionBusyId: string | null;
+  toast: string | null;
 };
 
 type PersistedSlice = Pick<
@@ -53,7 +57,8 @@ type PersistedSlice = Pick<
   | "riskType"
   | "dateFrom"
   | "dateTo"
-  | "insuranceOnly"
+  | "queue"
+  | "fileId"
   | "viewMode"
   | "sortBy"
   | "sortOrder"
@@ -69,7 +74,8 @@ const defaultState: CasesSessionState = {
   riskType: "",
   dateFrom: "",
   dateTo: "",
-  insuranceOnly: true,
+  queue: "confirmed",
+  fileId: "",
   viewMode: "table",
   sortBy: "publish_date",
   sortOrder: "desc",
@@ -79,6 +85,8 @@ const defaultState: CasesSessionState = {
   error: null,
   selected: [],
   exporting: false,
+  actionBusyId: null,
+  toast: null,
 };
 
 function loadPersisted(): Partial<CasesSessionState> {
@@ -89,6 +97,8 @@ function loadPersisted(): Partial<CasesSessionState> {
     return {
       ...parsed,
       selected: Array.isArray(parsed.selected) ? parsed.selected : [],
+      queue: parsed.queue || "confirmed",
+      fileId: parsed.fileId || "",
     };
   } catch {
     return {};
@@ -103,7 +113,8 @@ function persist(s: CasesSessionState) {
       riskType: s.riskType,
       dateFrom: s.dateFrom,
       dateTo: s.dateTo,
-      insuranceOnly: s.insuranceOnly,
+      queue: s.queue,
+      fileId: s.fileId,
       viewMode: s.viewMode,
       sortBy: s.sortBy,
       sortOrder: s.sortOrder,
@@ -123,6 +134,8 @@ let state: CasesSessionState = {
   ...loadPersisted(),
   loading: false,
   exporting: false,
+  actionBusyId: null,
+  toast: null,
 };
 let runSeq = 0;
 const listeners = new Set<() => void>();
@@ -138,13 +151,15 @@ function patch(partial: Partial<CasesSessionState>) {
 }
 
 function buildParams(p: number, overrides?: Partial<CasesFilterParams>): CasesFilterParams {
+  const queue = overrides?.queue ?? state.queue;
   const base: CasesFilterParams = {
     page: p,
     page_size: state.viewMode === "table" ? 20 : 12,
     keyword: state.keyword.trim() || undefined,
     regulator: state.regulator.trim() || undefined,
     risk_type: state.riskType.trim() || undefined,
-    is_insurance_related: state.insuranceOnly ? true : undefined,
+    queue: queue === "all" ? "all" : queue,
+    file_id: (overrides?.file_id ?? state.fileId).trim() || undefined,
     date_from: state.dateFrom || undefined,
     date_to: state.dateTo || undefined,
     sort_by: state.sortBy,
@@ -166,10 +181,10 @@ export const casesSession = {
   setRiskType: (riskType: string) => patch({ riskType }),
   setDateFrom: (dateFrom: string) => patch({ dateFrom }),
   setDateTo: (dateTo: string) => patch({ dateTo }),
-  setInsuranceOnly: (insuranceOnly: boolean) => patch({ insuranceOnly }),
+  setQueue: (queue: CaseQueue) => patch({ queue }),
+  setFileId: (fileId: string) => patch({ fileId }),
   setViewMode: (viewMode: CasesViewMode) => patch({ viewMode }),
-  setSortBy: (sortBy: CasesSortBy) => patch({ sortBy }),
-  setSortOrder: (sortOrder: "asc" | "desc") => patch({ sortOrder }),
+  clearToast: () => patch({ toast: null }),
   setSelected: (selected: string[]) => patch({ selected }),
   toggleOne: (id: string) => {
     const set = new Set(state.selected);
@@ -183,18 +198,47 @@ export const casesSession = {
     patch({ selected: allSelected ? [] : ids });
   },
   /**
-   * 进入页面时调用：有缓存则直接展示；URL 带 risk_type 且与当前不同则覆盖并重载。
+   * 进入页面时：同步 URL 上的 risk_type / queue / file_id，并按需加载。
    */
-  ensureLoaded: (urlRiskType?: string | null) => {
-    const fromUrl = (urlRiskType ?? "").trim();
-    if (fromUrl && fromUrl !== state.riskType) {
-      patch({ riskType: fromUrl });
-      void casesSession.load(1, { risk_type: fromUrl, page: 1 });
+  syncFromUrl: (opts: {
+    risk_type?: string | null;
+    queue?: string | null;
+    file_id?: string | null;
+  }) => {
+    const fromRisk = (opts.risk_type ?? "").trim();
+    const fromQueue = (opts.queue ?? "").trim() as CaseQueue | "";
+    const fromFile = (opts.file_id ?? "").trim();
+    const validQueues: CaseQueue[] = ["confirmed", "pending", "excluded", "all"];
+    const nextQueue =
+      fromQueue && validQueues.includes(fromQueue as CaseQueue)
+        ? (fromQueue as CaseQueue)
+        : state.queue;
+
+    const changed =
+      (fromRisk && fromRisk !== state.riskType) ||
+      (fromQueue && nextQueue !== state.queue) ||
+      fromFile !== state.fileId;
+
+    if (changed) {
+      patch({
+        riskType: fromRisk || state.riskType,
+        queue: fromQueue ? nextQueue : state.queue,
+        fileId: fromFile,
+      });
+      void casesSession.load(1, {
+        page: 1,
+        risk_type: fromRisk || state.riskType || undefined,
+        queue: fromQueue ? nextQueue : state.queue,
+        file_id: fromFile || undefined,
+      });
       return;
     }
     if (!state.data && !state.loading) {
       void casesSession.load(state.page);
     }
+  },
+  ensureLoaded: (urlRiskType?: string | null) => {
+    casesSession.syncFromUrl({ risk_type: urlRiskType });
   },
   load: async (p: number, overrides?: Partial<CasesFilterParams>) => {
     const runId = ++runSeq;
@@ -217,6 +261,11 @@ export const casesSession = {
       });
     }
   },
+  switchQueue: (queue: CaseQueue) => {
+    if (queue === state.queue) return;
+    patch({ queue });
+    void casesSession.load(1, { queue, page: 1 });
+  },
   switchView: (mode: CasesViewMode) => {
     if (mode === state.viewMode) return;
     patch({ viewMode: mode });
@@ -234,6 +283,32 @@ export const casesSession = {
     patch({ sortBy: col, sortOrder: nextOrder });
     void casesSession.load(1, { sort_by: col, sort_order: nextOrder, page: 1 });
   },
+  confirm: async (caseId: string) => {
+    patch({ actionBusyId: caseId, error: null, toast: null });
+    try {
+      await api.confirmCase(caseId);
+      patch({ toast: "已确认保险相关", actionBusyId: null });
+      void casesSession.load(state.page);
+    } catch (err) {
+      patch({
+        error: err instanceof ApiError ? err.message : "确认失败",
+        actionBusyId: null,
+      });
+    }
+  },
+  exclude: async (caseId: string, reason?: string) => {
+    patch({ actionBusyId: caseId, error: null, toast: null });
+    try {
+      await api.excludeCase(caseId, reason);
+      patch({ toast: "已排除该案例", actionBusyId: null });
+      void casesSession.load(state.page);
+    } catch (err) {
+      patch({
+        error: err instanceof ApiError ? err.message : "排除失败",
+        actionBusyId: null,
+      });
+    }
+  },
   exportTable: async (format: "csv" | "xlsx") => {
     patch({ exporting: true, error: null });
     try {
@@ -242,7 +317,8 @@ export const casesSession = {
           keyword: state.keyword.trim() || undefined,
           regulator: state.regulator.trim() || undefined,
           risk_type: state.riskType.trim() || undefined,
-          is_insurance_related: state.insuranceOnly ? true : undefined,
+          queue: state.queue,
+          file_id: state.fileId.trim() || undefined,
           date_from: state.dateFrom || undefined,
           date_to: state.dateTo || undefined,
           sort_by: state.sortBy,

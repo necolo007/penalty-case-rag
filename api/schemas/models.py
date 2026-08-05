@@ -110,3 +110,7 @@ class CasePatchRequest(BaseModel):
     risk_tags: Optional[list[str]] = None
     risk_type_ids: Optional[list[str]] = None
     is_insurance_related: Optional[bool] = None
+
+
+class CaseExcludeRequest(BaseModel):
+    reason: Optional[str] = None

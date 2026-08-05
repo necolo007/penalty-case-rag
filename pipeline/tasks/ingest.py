@@ -57,8 +57,17 @@ async def ingest_document(ctx, file_id: str, file_path: str, file_name: str,
         logger.error("%s", e)
         pool = ctx["pool"]
         await pool.execute(
-            "UPDATE documents SET parse_status = 'failed', parse_error = $2 WHERE file_id = $1",
-            file_id, str(e),
+            """
+            UPDATE documents
+            SET parse_status = 'failed',
+                parse_error = $2,
+                parse_metadata = COALESCE(parse_metadata, '{}'::jsonb) || $3::jsonb,
+                updated_at = NOW()
+            WHERE file_id = $1
+            """,
+            file_id,
+            str(e),
+            '{"stage":"doc","failed_stage":"doc","progress_pct":5}',
         )
         return {"status": "failed", "file_id": file_id, "error": str(e)}
 
@@ -73,8 +82,22 @@ async def ingest_document(ctx, file_id: str, file_path: str, file_name: str,
         logger.exception("Ingest failed for %s", file_id)
         pool = ctx["pool"]
         await pool.execute(
-            "UPDATE documents SET parse_status = 'failed', parse_error = $2 WHERE file_id = $1",
-            file_id, str(e),
+            """
+            UPDATE documents
+            SET parse_status = 'failed',
+                parse_error = $2,
+                parse_metadata = COALESCE(parse_metadata, '{}'::jsonb)
+                    || jsonb_build_object(
+                        'failed_stage',
+                        COALESCE(parse_metadata->>'stage', 'extract'),
+                        'stage',
+                        COALESCE(parse_metadata->>'stage', 'extract')
+                    ),
+                updated_at = NOW()
+            WHERE file_id = $1
+            """,
+            file_id,
+            str(e),
         )
         return {"status": "failed", "file_id": file_id, "error": str(e)}
 
@@ -101,6 +124,11 @@ async def startup(ctx):
         enable_mineru = enable_ocr = False
 
     ctx["pool"] = pool
+    from core.ids import sync_id_sequences
+
+    seq_levels = await sync_id_sequences(pool)
+    logger.info("id_sequences synced: %s", seq_levels)
+
     ctx["orchestrator"] = IngestOrchestrator(
         pool=pool,
         router=DocumentRouter(

@@ -343,7 +343,7 @@ export function RiskAtlasPanel({
 
           <div className="mt-6 flex flex-col gap-2">
             <Link
-              to={`/cases?risk_type=${encodeURIComponent(selectedMeta.id)}`}
+              to={`/knowledge?view=queue&queue=confirmed&risk_type=${encodeURIComponent(selectedMeta.id)}`}
               className="inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-white no-underline transition duration-200 hover:bg-primary-deep focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
             >
               <Search className="h-4 w-4" aria-hidden />

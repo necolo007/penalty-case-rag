@@ -102,6 +102,37 @@ export const api = {
 
   getCase: (caseId: string) => request<CaseDetail>(`/cases/${encodeURIComponent(caseId)}`),
 
+  confirmCase: (caseId: string) =>
+    request<{ case_id: string; status: string }>(
+      `/cases/${encodeURIComponent(caseId)}/confirm`,
+      { method: "POST" },
+    ),
+
+  excludeCase: (caseId: string, reason?: string) =>
+    request<{ case_id: string; status: string; candidate_reasons: string[] }>(
+      `/cases/${encodeURIComponent(caseId)}/exclude`,
+      jsonInit("POST", { reason: reason || null }),
+    ),
+
+  patchCase: (
+    caseId: string,
+    body: {
+      party_name?: string;
+      risk_tags?: string[];
+      risk_type_ids?: string[];
+      is_insurance_related?: boolean;
+      regulator?: string;
+      legal_basis?: string;
+      violation_behavior?: string;
+      penalty_content?: string;
+      penalty_doc_no?: string;
+    },
+  ) =>
+    request<{ case_id: string; updated_fields: string[] }>(
+      `/cases/${encodeURIComponent(caseId)}`,
+      jsonInit("PATCH", body),
+    ),
+
   exportCasesTable: async (
     params: Record<string, string | number | boolean | undefined>,
     format: "csv" | "xlsx" = "csv",

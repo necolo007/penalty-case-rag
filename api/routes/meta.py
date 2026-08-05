@@ -51,6 +51,18 @@ async def get_stats(pool=Depends(get_pool)):
     insurance_cases = await pool.fetchval(
         "SELECT COUNT(*) FROM penalty_cases WHERE is_insurance_related"
     )
+    pending_insurance_cases = await pool.fetchval(
+        """
+        SELECT COUNT(*) FROM penalty_cases
+        WHERE is_insurance_candidate = TRUE AND is_insurance_related = FALSE
+        """
+    )
+    excluded_cases = await pool.fetchval(
+        """
+        SELECT COUNT(*) FROM penalty_cases
+        WHERE is_insurance_related = FALSE AND is_insurance_candidate = FALSE
+        """
+    )
     embedded_cases = await pool.fetchval("SELECT COUNT(*) FROM case_embeddings")
 
     tag_distribution = await pool.fetch(
@@ -138,6 +150,9 @@ async def get_stats(pool=Depends(get_pool)):
         "documents": total_docs,
         "cases": total_cases,
         "insurance_cases": insurance_cases,
+        "confirmed_insurance_cases": insurance_cases,
+        "pending_insurance_cases": pending_insurance_cases,
+        "excluded_cases": excluded_cases,
         "embedded_cases": embedded_cases,
         "tag_distribution": {r["risk_type_id"]: r["cnt"] for r in tag_distribution},
         "cn_tag_distribution": {r["risk_tag"]: r["cnt"] for r in cn_tag_distribution},

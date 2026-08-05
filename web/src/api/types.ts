@@ -52,8 +52,18 @@ export interface SubmissionResponse {
   suggestion: string;
 }
 
+/** 案例知识库三级队列 */
+export type CaseQueue = "confirmed" | "pending" | "excluded" | "all";
+
+export interface ParseStage {
+  key: string;
+  label: string;
+  status: "done" | "active" | "pending" | "failed";
+}
+
 export interface CaseListItem {
   case_id: string;
+  file_id?: string | null;
   party_name: string | null;
   institution_type: string | null;
   penalty_doc_no: string | null;
@@ -65,6 +75,8 @@ export interface CaseListItem {
   risk_tags: string[] | null;
   risk_type_ids: string[] | null;
   is_insurance_related: boolean | null;
+  is_insurance_candidate?: boolean | null;
+  candidate_reasons?: string[] | null;
   overall_confidence: number | null;
   source_file: string | null;
 }
@@ -113,6 +125,17 @@ export interface DocumentItem {
   updated_at?: string | null;
   raw_text_path?: string | null;
   cases?: ExtractedCaseSummary[];
+  case_total?: number;
+  case_confirmed?: number;
+  case_pending?: number;
+  case_excluded?: number;
+  parse_stages?: ParseStage[];
+  /** Worker 当前阶段 key：doc|ocr|extract|entity|review */
+  parse_stage?: string | null;
+  /** Worker 上报的 0–100 进度 */
+  progress_pct?: number | null;
+  cases_done?: number | null;
+  cases_total?: number | null;
 }
 
 export interface UploadResponse {
@@ -125,11 +148,17 @@ export interface StatsResponse {
   documents: number;
   cases: number;
   insurance_cases: number;
+  /** 与 insurance_cases 同义：已确认保险 */
+  confirmed_insurance_cases?: number | null;
+  /** 待复核候选（candidate 且未 related） */
+  pending_insurance_cases?: number | null;
+  /** 已排除 */
+  excluded_cases?: number | null;
   embedded_cases: number;
   tag_distribution: Record<string, number>;
   cn_tag_distribution?: Record<string, number>;
   document_status: Record<string, number>;
-  /** 待复核候选数（材料审查未完成 + 未反馈审查日志） */
+  /** 材料审查待复核（驾驶舱） */
   pending_review_count?: number | null;
   /** 标签覆盖率 0~1；无数据时为 null */
   tag_coverage_rate?: number | null;

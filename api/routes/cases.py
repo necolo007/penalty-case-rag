@@ -3,6 +3,7 @@
 import csv
 import io
 import json
+import logging
 from datetime import date, datetime
 from pathlib import Path
 
@@ -10,16 +11,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 from api.dependencies import get_pool
-from api.schemas.models import CasePatchRequest
+from api.schemas.models import CaseExcludeRequest, CasePatchRequest
 from core.config import get_settings
 from pipeline.export.exporters import export_candidates, export_extracted_cases, export_gold_cases
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 PATCHABLE_FIELDS = [
     "party_name", "penalty_doc_no", "violation_behavior", "penalty_content",
     "regulator", "legal_basis", "risk_tags", "risk_type_ids", "is_insurance_related",
 ]
+
+QUEUE_VALUES = frozenset({"confirmed", "pending", "excluded", "all"})
 
 # 列表可排序字段 → SQL 表达式（含处罚金额数值化）
 _FINE_AMOUNT_SORT_EXPR = """
@@ -44,10 +48,11 @@ SORTABLE_COLUMNS = {
 }
 
 CASE_LIST_SELECT = """
-        SELECT c.case_id, c.party_name, c.institution_type, c.penalty_doc_no,
+        SELECT c.case_id, c.file_id, c.party_name, c.institution_type, c.penalty_doc_no,
                c.violation_behavior, c.penalty_content, c.fine_amount, c.regulator,
                c.publish_date, c.risk_tags, c.risk_type_ids, c.is_insurance_related,
-               c.overall_confidence, d.file_name AS source_file
+               c.is_insurance_candidate, c.candidate_reasons, c.overall_confidence,
+               d.file_name AS source_file
         FROM penalty_cases c JOIN documents d ON c.file_id = d.file_id
 """
 
@@ -74,9 +79,33 @@ def _build_case_filters(
     date_from: date | None,
     date_to: date | None,
     case_ids: list[str] | None = None,
+    queue: str | None = None,
+    file_id: str | None = None,
 ) -> tuple[str, list]:
     params: list = []
     clauses: list[str] = []
+
+    # 三级队列优先于 is_insurance_related
+    q = (queue or "").strip().lower() or None
+    if q and q not in QUEUE_VALUES:
+        raise HTTPException(422, detail=f"Invalid queue: {queue!r}")
+    if q == "confirmed":
+        clauses.append("c.is_insurance_related = TRUE")
+    elif q == "pending":
+        clauses.append(
+            "c.is_insurance_candidate = TRUE AND c.is_insurance_related = FALSE"
+        )
+    elif q == "excluded":
+        clauses.append(
+            "c.is_insurance_related = FALSE AND c.is_insurance_candidate = FALSE"
+        )
+    elif is_insurance_related is not None:
+        params.append(is_insurance_related)
+        clauses.append(f"c.is_insurance_related = ${len(params)}")
+
+    if file_id:
+        params.append(file_id)
+        clauses.append(f"c.file_id = ${len(params)}")
 
     if risk_type:
         # 支持 27 类中文标签或 R00x；中文优先匹配 risk_tags
@@ -94,9 +123,6 @@ def _build_case_filters(
     if institution_type:
         params.append(institution_type)
         clauses.append(f"c.institution_type = ${len(params)}")
-    if is_insurance_related is not None:
-        params.append(is_insurance_related)
-        clauses.append(f"c.is_insurance_related = ${len(params)}")
     if keyword:
         params.append(keyword)
         clauses.append(
@@ -114,6 +140,67 @@ def _build_case_filters(
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params
+
+
+async def _ensure_tags_and_embedding(pool, case_id: str, row) -> dict:
+    """确认保险后：补打标签（若空）并补写向量（若不存在）。"""
+    updated: dict = {}
+    risk_tags = list(row["risk_tags"] or [])
+    risk_type_ids = list(row["risk_type_ids"] or [])
+
+    if not risk_tags and (row["violation_behavior"] or "").strip():
+        try:
+            from engine.classification.risk_tagger import RiskTagger
+
+            tagger = RiskTagger(pool)
+            tags = await tagger.classify(row["violation_behavior"])
+            risk_tags = tags.get("display_tags") or []
+            risk_type_ids = tags.get("competition_ids") or risk_type_ids
+            await pool.execute(
+                """
+                UPDATE penalty_cases
+                SET risk_tags = $2, risk_type_ids = $3, updated_at = NOW()
+                WHERE case_id = $1
+                """,
+                case_id, risk_tags, risk_type_ids,
+            )
+            updated["risk_tags"] = risk_tags
+            updated["risk_type_ids"] = risk_type_ids
+        except Exception:  # noqa: BLE001
+            logger.exception("confirm: risk tagging failed for %s", case_id)
+
+    has_emb = await pool.fetchval(
+        "SELECT 1 FROM case_embeddings WHERE case_id = $1", case_id,
+    )
+    if not has_emb:
+        try:
+            from core.config import get_settings as _gs
+            from core.db import to_pgvector
+            from engine.embedding.provider import create_embedding_provider
+
+            text = " ".join(filter(None, [
+                row["violation_behavior"] or "",
+                row["penalty_content"] or "",
+                " ".join(risk_tags),
+            ])).strip()
+            if text:
+                embedder = create_embedding_provider(_gs())
+                vec = embedder.encode_documents([text])[0]
+                await pool.execute(
+                    """
+                    INSERT INTO case_embeddings (case_id, embedding, embedding_model)
+                    VALUES ($1, $2::vector, $3)
+                    ON CONFLICT (case_id) DO UPDATE
+                    SET embedding = EXCLUDED.embedding,
+                        embedding_model = EXCLUDED.embedding_model
+                    """,
+                    case_id, to_pgvector(vec), embedder.model_name,
+                )
+                updated["embedded"] = True
+        except Exception:  # noqa: BLE001
+            logger.exception("confirm: embedding failed for %s", case_id)
+
+    return updated
 
 
 @router.get("/export/candidates")
@@ -153,6 +240,8 @@ async def export_cases_table(
     keyword: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    queue: str | None = None,
+    file_id: str | None = None,
     case_ids: str | None = Query(None, description="逗号分隔的 case_id 列表"),
     sort_by: str = Query("publish_date"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
@@ -169,6 +258,8 @@ async def export_cases_table(
         date_from=date_from,
         date_to=date_to,
         case_ids=ids,
+        queue=queue,
+        file_id=file_id,
     )
     sort_col = SORTABLE_COLUMNS.get(sort_by, SORTABLE_COLUMNS["publish_date"])
     order = "DESC" if sort_order.lower() == "desc" else "ASC"
@@ -230,6 +321,64 @@ async def export_cases_table(
     )
 
 
+@router.post("/{case_id}/confirm")
+async def confirm_case(case_id: str, pool=Depends(get_pool)):
+    """人工确认保险相关：写入 is_insurance_related，必要时补标签与向量。"""
+    row = await pool.fetchrow(
+        "SELECT * FROM penalty_cases WHERE case_id = $1", case_id,
+    )
+    if row is None:
+        raise HTTPException(404, detail="case not found")
+
+    await pool.execute(
+        """
+        UPDATE penalty_cases
+        SET is_insurance_related = TRUE,
+            is_insurance_candidate = TRUE,
+            updated_at = NOW()
+        WHERE case_id = $1
+        """,
+        case_id,
+    )
+    extras = await _ensure_tags_and_embedding(pool, case_id, row)
+    return {"case_id": case_id, "status": "confirmed", **extras}
+
+
+@router.post("/{case_id}/exclude")
+async def exclude_case(
+    case_id: str,
+    body: CaseExcludeRequest | None = None,
+    pool=Depends(get_pool),
+):
+    """人工排除：非保险相关，并记录排除原因。"""
+    row = await pool.fetchrow(
+        "SELECT candidate_reasons FROM penalty_cases WHERE case_id = $1", case_id,
+    )
+    if row is None:
+        raise HTTPException(404, detail="case not found")
+
+    reason = (body.reason if body else None) or "人工排除"
+    reasons = list(row["candidate_reasons"] or [])
+    tag = f"人工排除：{reason}" if not reason.startswith("人工排除") else reason
+    if tag not in reasons:
+        reasons.append(tag)
+
+    await pool.execute(
+        """
+        UPDATE penalty_cases
+        SET is_insurance_related = FALSE,
+            is_insurance_candidate = FALSE,
+            candidate_reasons = $2,
+            updated_at = NOW()
+        WHERE case_id = $1
+        """,
+        case_id, reasons,
+    )
+    # 排除后移出检索语料：删除向量（若有）
+    await pool.execute("DELETE FROM case_embeddings WHERE case_id = $1", case_id)
+    return {"case_id": case_id, "status": "excluded", "candidate_reasons": reasons}
+
+
 @router.get("/{case_id}")
 async def get_case(case_id: str, pool=Depends(get_pool)):
     row = await pool.fetchrow(
@@ -257,6 +406,11 @@ async def list_cases(
     keyword: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    queue: str | None = Query(
+        None,
+        description="confirmed|pending|excluded|all；默认不限（由前端传 confirmed）",
+    ),
+    file_id: str | None = None,
     sort_by: str = Query("publish_date"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     pool=Depends(get_pool),
@@ -280,6 +434,8 @@ async def list_cases(
         keyword=keyword,
         date_from=date_from,
         date_to=date_to,
+        queue=queue,
+        file_id=file_id,
     )
 
     count_sql = f"SELECT COUNT(*) FROM penalty_cases c {where}"

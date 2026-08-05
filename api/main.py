@@ -53,7 +53,7 @@ app.include_router(meta.router, prefix="/api/v1", tags=["元数据"])
 
 # 前端 SPA：`cd web && npm run build` → web/dist（运行时检测，避免启动早于构建）
 _WEB_DIST = Path(__file__).resolve().parents[1] / "web" / "dist"
-_SPA_ROUTE_PREFIXES = frozenset({"search", "cases", "documents", "review"})
+_SPA_ROUTE_PREFIXES = frozenset({"search", "cases", "documents", "review", "knowledge"})
 _STATIC_MOUNTED = False
 
 
