@@ -25,9 +25,12 @@ from core.redis_client import close_redis, get_redis
 from engine.embedding.cache import CachedQueryEncoder
 from engine.embedding.provider import create_embedding_provider
 from engine.llm.client import create_llm_client
-from engine.retrieval.assemble import assemble_hybrid_retriever
+from engine.retrieval.assemble import (
+    AnyRetriever,
+    assemble_hybrid_retriever,
+    ensure_sparse_index_loaded,
+)
 from engine.retrieval.base import SearchQuery
-from engine.retrieval.hybrid_retriever import HybridRetriever
 from engine.retrieval.query_rewriter import QueryRewriter
 from engine.retrieval.reranker import NoopReranker, Reranker
 from engine.retrieval.risk_predictor import RiskPredictor
@@ -69,8 +72,14 @@ class SynonymOnlyRewriter:
 async def build_retriever(
     *, use_rerank: bool, use_llm_rewrite: bool = False,
     rerank_candidates: int | None = None,
-) -> HybridRetriever:
+    backend: str | None = None,
+    enable_hyde: bool | None = None,
+) -> AnyRetriever:
     settings = get_settings()
+    if backend:
+        settings.RETRIEVAL_BACKEND = backend
+    if enable_hyde is not None:
+        settings.RETRIEVAL_HYDE_ENABLED = enable_hyde
     pool = await create_pool()
     redis = await get_redis()
     embedder = create_embedding_provider(settings)
@@ -89,12 +98,32 @@ async def build_retriever(
     else:
         reranker = NoopReranker()
 
-    # 默认用同义词词典改写（快、免费，但不是生产真实行为）；
-    # --llm-rewrite 切换为生产同款的 LLM 改写器，用于验证「口语→法言法语」
-    # 对语义检索命中率的真实增益。
-    llm_client = create_llm_client(settings) if use_llm_rewrite else None
-    rewriter = QueryRewriter(llm_client, expander) if llm_client else SynonymOnlyRewriter(expander)
+    # HyDE 与 llm-rewrite 可独立：仅开 HyDE 时改写仍走同义词，只多一路 dense_hyde。
+    need_llm = bool(use_llm_rewrite or settings.RETRIEVAL_HYDE_ENABLED)
+    llm_client = None
+    if need_llm:
+        try:
+            llm_client = create_llm_client(settings)
+        except Exception as e:  # noqa: BLE001
+            print(f"LLM unavailable ({e}); HyDE/llm-rewrite disabled for this run")
+            if settings.RETRIEVAL_HYDE_ENABLED:
+                settings.RETRIEVAL_HYDE_ENABLED = False
+    if settings.RETRIEVAL_HYDE_ENABLED and llm_client is None:
+        print("HyDE enabled but no LLM client; dense_hyde channel will be skipped")
+        settings.RETRIEVAL_HYDE_ENABLED = False
+
+    if llm_client is not None:
+        rewriter = QueryRewriter(
+            llm_client, expander, use_llm_rewrite=bool(use_llm_rewrite),
+        )
+    else:
+        rewriter = SynonymOnlyRewriter(expander)
     risk_predictor = RiskPredictor(pool, llm_client=llm_client)
+
+    sparse_index = None
+    be = (settings.RETRIEVAL_BACKEND or "bge_m3").strip().lower()
+    if be not in ("legacy_four_way", "legacy", "four_way"):
+        sparse_index = await ensure_sparse_index_loaded(pool)
 
     return assemble_hybrid_retriever(
         settings=settings,
@@ -104,6 +133,7 @@ async def build_retriever(
         reranker=reranker,
         query_encoder=CachedQueryEncoder(embedder, redis, ttl=settings.EMBEDDING_CACHE_TTL),
         rerank_candidates=rerank_candidates,
+        sparse_index=sparse_index,
     )
 
 
@@ -115,8 +145,18 @@ async def main() -> None:
     parser.add_argument("--rerank", action="store_true")
     parser.add_argument("--llm-rewrite", action="store_true",
                         help="使用生产同款 LLM 查询改写（否则用同义词词典降级改写）")
+    parser.add_argument(
+        "--hyde", action="store_true",
+        help="强制开启 HyDE dense 通道（需 LLM；覆盖 Settings.RETRIEVAL_HYDE_ENABLED）",
+    )
+    parser.add_argument(
+        "--no-hyde", action="store_true",
+        help="关闭 HyDE（对比基线时用）",
+    )
     parser.add_argument("--rerank-candidates", type=int, default=None,
                         help="精排候选数（默认读 Settings.RETRIEVAL_RERANK_CANDIDATES）")
+    parser.add_argument("--backend", default=None,
+                        help="检索后端：bge_m3 | legacy_four_way（默认读 Settings）")
     parser.add_argument("--questions", default=None)
     parser.add_argument("--gold", default=None)
     parser.add_argument("--submission-out", default=None)
@@ -146,9 +186,23 @@ async def main() -> None:
     if args.limit:
         questions = questions[: args.limit]
 
+    if args.hyde and args.no_hyde:
+        raise SystemExit("--hyde 与 --no-hyde 不能同时使用")
+    enable_hyde: bool | None = None
+    if args.hyde:
+        enable_hyde = True
+    elif args.no_hyde:
+        enable_hyde = False
+
     suffix = "rerank" if args.rerank else "norerank"
     if args.llm_rewrite:
         suffix += "_llm"
+    if enable_hyde is True or (
+        enable_hyde is None and get_settings().RETRIEVAL_HYDE_ENABLED
+    ):
+        suffix += "_hyde"
+    backend = args.backend or get_settings().RETRIEVAL_BACKEND
+    suffix += f"_{backend.replace('-', '_')}"
     sub_out = Path(args.submission_out or f"data/eval/submission_{tag}_{suffix}.jsonl")
     rep_out = Path(args.report_out or f"data/eval/eval_report_{tag}_{suffix}.json")
     if not sub_out.is_absolute():
@@ -156,10 +210,20 @@ async def main() -> None:
     if not rep_out.is_absolute():
         rep_out = _ROOT / rep_out
 
-    print(f"split={tag} n={len(questions)} rerank={args.rerank} llm_rewrite={args.llm_rewrite} top_k={args.top_k}")
+    hyde_flag = (
+        enable_hyde
+        if enable_hyde is not None
+        else get_settings().RETRIEVAL_HYDE_ENABLED
+    )
+    print(
+        f"split={tag} n={len(questions)} backend={backend} "
+        f"rerank={args.rerank} llm_rewrite={args.llm_rewrite} "
+        f"hyde={hyde_flag} top_k={args.top_k}"
+    )
     retriever = await build_retriever(
         use_rerank=args.rerank, use_llm_rewrite=args.llm_rewrite,
-        rerank_candidates=args.rerank_candidates,
+        rerank_candidates=args.rerank_candidates, backend=args.backend,
+        enable_hyde=enable_hyde,
     )
 
     submission = []

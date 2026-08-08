@@ -1,6 +1,7 @@
-"""用 raw_text 增强重建 case_embeddings。
+"""用文档文本重建 case_embeddings（dense + 可选 sparse）。
 
 用法：python scripts/reindex_embeddings.py [--limit 50]
+BGE-M3 路径会同时写入 sparse_weights；legacy dense-only 仅写向量。
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import re
 from core.config import get_settings
 from core.db import close_pool, create_pool, to_pgvector
 from engine.embedding.provider import create_embedding_provider
+from engine.embedding.store import UPSERT_EMBEDDING_SQL, encode_documents_maybe_dual, upsert_embedding_args
+from engine.retrieval.assemble import get_sparse_index
 
 logger = logging.getLogger(__name__)
 
@@ -64,27 +67,31 @@ async def reindex(*, limit: int | None, batch_size: int) -> None:
     )
     print(f"Reindexing {len(rows)} cases with model={embedder.model_name}")
 
+    sparse_index = get_sparse_index()
     for i in range(0, len(rows), batch_size):
         batch = rows[i : i + batch_size]
         texts = [build_embed_text(r) for r in batch]
-        vectors = embedder.encode_documents(texts)
+        dense_list, sparse_list = encode_documents_maybe_dual(embedder, texts)
         async with pool.acquire() as conn:
             async with conn.transaction():
-                for row, vec in zip(batch, vectors, strict=True):
+                for idx, row in enumerate(batch):
+                    sparse = sparse_list[idx] if sparse_list is not None else None
                     await conn.execute(
-                        """
-                        INSERT INTO case_embeddings (case_id, embedding, embedding_model)
-                        VALUES ($1, $2::vector, $3)
-                        ON CONFLICT (case_id) DO UPDATE SET
-                            embedding = EXCLUDED.embedding,
-                            embedding_model = EXCLUDED.embedding_model
-                        """,
-                        row["case_id"],
-                        to_pgvector(vec),
-                        embedder.model_name,
+                        UPSERT_EMBEDDING_SQL,
+                        *upsert_embedding_args(
+                            row["case_id"],
+                            dense_list[idx],
+                            embedder.model_name,
+                            sparse=sparse,
+                            to_pgvector=to_pgvector,
+                        ),
                     )
+                    if sparse is not None:
+                        sparse_index.upsert(row["case_id"], sparse)
         print(f"  {min(i + batch_size, len(rows))}/{len(rows)}")
 
+    # 确保索引与 DB 一致
+    await sparse_index.load_from_db(pool)
     await close_pool()
     print("Done.")
 
@@ -93,7 +100,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="Rebuild case embeddings with raw_text")
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--batch-size", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=8)
     args = parser.parse_args()
     asyncio.run(reindex(limit=args.limit, batch_size=args.batch_size))
 

@@ -1,17 +1,24 @@
-"""字段抽取引擎：正则规则 + LLM 二次纠错 + 字段校验置信度打分。
+"""字段抽取引擎：公示表映射 + 长文 LLM 主抽（短字段正则回填）+ 轻量校验。
 
 两条输入路径：
   ① 公示表解析结果（TableParser 已输出结构化 records）→ 直接映射
-  ② 长文本 Markdown（决定书/OCR）→ 正则抽取 → 低置信度 LLM 补全
+  ② 长文本 Markdown（决定书/OCR）→ 默认 LLM 提示词主抽长字段；
+     文号/机关等短字段用正则回填空值、低置信或覆盖弱 LLM 值；
+     无 LLM / 抽取失败时回退正则；regex_first 模式则正则主抽 + 低置信度纠错
 """
 
 import json
 import logging
 import re
+from typing import Any
 
 from engine.classification.entity_normalizer import normalize_entity
 from engine.llm.client import DeepSeekClient, ThinkingMode
-from engine.llm.prompts import FIELD_REFINE_PROMPT
+from engine.llm.prompts import (
+    EXTRACTION_SYSTEM_PROMPT,
+    EXTRACTION_USER_PROMPT,
+    FIELD_REFINE_PROMPT,
+)
 from pipeline.extraction.regex_patterns import (
     DOCNO_REGION_REGULATOR,
     INSTITUTION_TYPE_RULES,
@@ -25,10 +32,29 @@ logger = logging.getLogger(__name__)
 
 CORE_FIELDS = ["party_name", "violation_behavior", "penalty_content", "regulator"]
 DEFAULT_LLM_REFINE_THRESHOLD = 0.6
+DEFAULT_EXTRACTION_MODE = "llm_first"
+DEFAULT_EXTRACTION_LLM_MAX_CHARS = 8000
 
 # 无地区限定的顶层机关裸词：信息量低于带地区的具体机关名，即便字数更多也不应
-# 在候选择优时占先（见 _from_text 的 regulator 兜底逻辑）。
+# 在候选择优时占先（见 _from_text_regex 的 regulator 兜底逻辑）。
 _BARE_REGULATOR_NAMES = {"国家金融监督管理总局", "中国银保监会", "中国保监会"}
+
+_LLM_INSTITUTION_MAP: dict[str, InstitutionType | None] = {
+    "寿险公司": InstitutionType.LIFE_INSURANCE,
+    "财险公司": InstitutionType.PROPERTY_INSURANCE,
+    "保险代理": InstitutionType.INSURANCE_AGENCY,
+    "保险经纪": InstitutionType.INSURANCE_AGENCY,
+    "保险代理/中介": InstitutionType.INSURANCE_AGENCY,
+    "保险公司": None,  # 过粗，交给规则从当事人名称细判
+    "其他": InstitutionType.OTHER_FINANCIAL,
+    "其他金融机构": InstitutionType.OTHER_FINANCIAL,
+    "非保险": InstitutionType.NON_INSURANCE,
+    "无法判断": None,
+}
+
+# LLM 主抽后：长字段保留 LLM；短字段按策略用正则加固精确匹配。
+_SHORT_FIELDS_PREFER_REGEX = ("penalty_doc_no", "regulator")
+_SHORT_FIELDS_FILL_IF_EMPTY = ("party_name",)
 
 
 def _matched_text(m: "re.Match") -> str:
@@ -39,6 +65,15 @@ def _matched_text(m: "re.Match") -> str:
     return m.group(0)
 
 
+def _parse_json_object(raw: str) -> dict[str, Any]:
+    """解析模型 JSON；容忍偶发 Markdown 代码围栏。"""
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return json.loads(text)
+
+
 class ExtractorEngine:
     def __init__(
         self,
@@ -46,16 +81,38 @@ class ExtractorEngine:
         use_llm_refine: bool = True,
         *,
         llm_refine_threshold: float | None = None,
+        extraction_mode: str | None = None,
+        extraction_llm_max_chars: int | None = None,
     ):
         self.llm = llm_client
         self.use_llm_refine = use_llm_refine
+        settings = None
+        try:
+            from core.config import get_settings
+            settings = get_settings()
+        except Exception:  # noqa: BLE001
+            settings = None
+
         if llm_refine_threshold is None:
-            try:
-                from core.config import get_settings
-                llm_refine_threshold = get_settings().LLM_REFINE_THRESHOLD
-            except Exception:  # noqa: BLE001
-                llm_refine_threshold = DEFAULT_LLM_REFINE_THRESHOLD
+            llm_refine_threshold = (
+                settings.LLM_REFINE_THRESHOLD if settings else DEFAULT_LLM_REFINE_THRESHOLD
+            )
         self.llm_refine_threshold = llm_refine_threshold
+
+        if extraction_mode is None:
+            extraction_mode = (
+                settings.EXTRACTION_MODE if settings else DEFAULT_EXTRACTION_MODE
+            )
+        mode = (extraction_mode or DEFAULT_EXTRACTION_MODE).strip().lower()
+        self.extraction_mode = mode if mode in ("llm_first", "regex_first") else DEFAULT_EXTRACTION_MODE
+
+        if extraction_llm_max_chars is None:
+            extraction_llm_max_chars = (
+                settings.EXTRACTION_LLM_MAX_CHARS
+                if settings
+                else DEFAULT_EXTRACTION_LLM_MAX_CHARS
+            )
+        self.extraction_llm_max_chars = max(1000, int(extraction_llm_max_chars))
 
     def extract(self, parse_result: ParseResult, *, file_id: str,
                 source_file: str) -> list[ExtractedCase]:
@@ -71,7 +128,7 @@ class ExtractorEngine:
             text = normalize_ocr_text(parse_result.markdown)
             if text != parse_result.markdown:
                 parse_result.markdown = text
-            # 路径②：长文本 → 按文号/当事人切分多案例后分别抽取
+            # 路径②：长文本 → 按文号切分多案例后分别抽取
             segments = self._split_case_segments(parse_result.markdown)
             cases = []
             for seg in segments:
@@ -79,17 +136,42 @@ class ExtractorEngine:
                 if case:
                     cases.append(case)
             if not cases:
-                case = self._from_text(parse_result.markdown, file_id=file_id, source_file=source_file)
+                case = self._from_text(
+                    parse_result.markdown, file_id=file_id, source_file=source_file,
+                )
                 cases = [case] if case else []
 
         for case in cases:
-            self._infer_institution_type(case)
+            self._finalize_institution_type(case)
             self._validate(case)
-            if (case.overall_confidence < self.llm_refine_threshold
-                    and self.use_llm_refine and self.llm is not None):
+            # LLM 已主抽（含 hybrid 短字段回填）时不再二次 refine
+            if (
+                case.extraction_method not in ("llm", "hybrid")
+                and case.overall_confidence < self.llm_refine_threshold
+                and self.use_llm_refine
+                and self.llm is not None
+            ):
                 self._llm_refine(case)
                 self._validate(case)
         return cases
+
+    def _finalize_institution_type(self, case: ExtractedCase) -> None:
+        """机构类型：LLM 已给出明确类型则保留；否则规则细判。"""
+        if getattr(case, "_institution_locked", False):
+            return
+        self._infer_institution_type(case)
+
+    def _from_text(self, text: str, *, file_id: str, source_file: str) -> ExtractedCase | None:
+        """长文抽取入口：按 EXTRACTION_MODE 选择 LLM 主抽或正则主抽。"""
+        if not text.strip():
+            return None
+        prefer_llm = self.extraction_mode == "llm_first" and self.llm is not None
+        if prefer_llm:
+            case = self._from_text_llm(text, file_id=file_id, source_file=source_file)
+            if case is not None:
+                return case
+            logger.warning("LLM extraction failed for %s, fallback to regex", file_id)
+        return self._from_text_regex(text, file_id=file_id, source_file=source_file)
 
     # ---------- 路径①：公示表 ----------
 
@@ -115,7 +197,7 @@ class ExtractorEngine:
             )
         return case
 
-    # ---------- 路径②：长文本 ----------
+    # ---------- 路径②：长文本切分 ----------
 
     def _split_case_segments(self, text: str) -> list[str]:
         """按处罚文号切分为多案例片段（仅在文号确有差异时才拆分）。
@@ -198,7 +280,174 @@ class ExtractorEngine:
         joined = "\n…\n".join(ordered)
         return joined[:max_chars]
 
-    def _from_text(self, text: str, *, file_id: str, source_file: str) -> ExtractedCase | None:
+    # ---------- 路径②a：LLM 主抽 ----------
+
+    def _from_text_llm(self, text: str, *, file_id: str, source_file: str) -> ExtractedCase | None:
+        case_text = text.strip()
+        if len(case_text) > self.extraction_llm_max_chars:
+            case_text = case_text[: self.extraction_llm_max_chars]
+        try:
+            resp = self.llm.complete(
+                EXTRACTION_USER_PROMPT.format(case_text=case_text),
+                system=EXTRACTION_SYSTEM_PROMPT,
+                max_tokens=1600,
+                temperature=0.1,
+                json_mode=True,
+                thinking=ThinkingMode.DISABLED,
+            )
+            data = _parse_json_object(resp)
+            if not isinstance(data, dict):
+                return None
+        except Exception as e:  # noqa: BLE001
+            logger.warning("LLM extraction call failed for %s: %s", file_id, e)
+            return None
+
+        case = ExtractedCase(
+            file_id=file_id,
+            source_file=source_file,
+            extraction_method="llm",
+            raw_text_snippet=self._build_evidence_snippet(text),
+        )
+        self._apply_llm_fields(case, data)
+        # 轻量补齐：日期/金额/依据不在主 Prompt 内，用正则从原文摘
+        self._supplement_aux_fields(case, text)
+        self._sanitize_fields(case)
+
+        # 短字段混合：跑一遍正则，回填空/低置信，并保住文号/机关精确匹配
+        regex_case = self._from_text_regex(text, file_id=file_id, source_file=source_file)
+        if regex_case is not None:
+            self._merge_regex_short_fields(case, regex_case)
+
+        # 至少一个核心字段才算成功，否则交给正则兜底
+        if not any(getattr(case, f) for f in CORE_FIELDS):
+            return None
+        return case
+
+    def _merge_regex_short_fields(
+        self, llm_case: ExtractedCase, regex_case: ExtractedCase,
+    ) -> bool:
+        """用正则加固短字段，长字段（违法事实/处罚内容）始终保留 LLM。
+
+        策略：
+        - penalty_doc_no / regulator：正则有可用值（非空且非 LOW）时优先采用，
+          以保住精确匹配；LLM 仅在正则缺失时保留。
+        - party_name：仅当 LLM 为空或 LOW 时回填（避免覆盖一案两罚主体选择）。
+        """
+        changed = False
+
+        for field in _SHORT_FIELDS_PREFER_REGEX:
+            rx_val = (getattr(regex_case, field) or "").strip()
+            if not rx_val:
+                continue
+            rx_conf = regex_case.field_confidences.get(field, FieldConfidence.MEDIUM.value)
+            llm_val = (getattr(llm_case, field) or "").strip()
+            llm_empty = self._field_empty_or_low(llm_case, field)
+
+            # 正则 LOW：仅救急空/低置信 LLM
+            if rx_conf == FieldConfidence.LOW.value and not llm_empty:
+                continue
+            if llm_val == rx_val:
+                llm_case.field_confidences[field] = rx_conf
+                continue
+
+            # 正则可用（或 LLM 空）：采用正则，保住文号/机关精确匹配
+            setattr(llm_case, field, rx_val)
+            llm_case.field_confidences[field] = rx_conf
+            changed = True
+
+        for field in _SHORT_FIELDS_FILL_IF_EMPTY:
+            if not self._field_empty_or_low(llm_case, field):
+                continue
+            rx_val = (getattr(regex_case, field) or "").strip()
+            if not rx_val:
+                continue
+            rx_conf = regex_case.field_confidences.get(field, FieldConfidence.MEDIUM.value)
+            setattr(llm_case, field, rx_val)
+            llm_case.field_confidences[field] = rx_conf
+            changed = True
+
+        if changed:
+            llm_case.extraction_method = "hybrid"
+            self._sanitize_fields(llm_case)
+        return changed
+
+    @staticmethod
+    def _field_empty_or_low(case: ExtractedCase, field: str) -> bool:
+        val = (getattr(case, field, None) or "").strip()
+        if not val:
+            return True
+        conf = case.field_confidences.get(field, FieldConfidence.LOW.value)
+        return conf == FieldConfidence.LOW.value
+
+    def _apply_llm_fields(self, case: ExtractedCase, data: dict[str, Any]) -> None:
+        str_fields = (
+            "party_name",
+            "penalty_doc_no",
+            "violation_behavior",
+            "penalty_content",
+            "regulator",
+            "case_summary",
+        )
+        for name in str_fields:
+            raw = data.get(name)
+            if raw is None:
+                case.field_confidences[name] = FieldConfidence.LOW.value
+                continue
+            value = str(raw).strip()
+            if not value or value.lower() == "null":
+                case.field_confidences[name] = FieldConfidence.LOW.value
+                continue
+            setattr(case, name, value)
+            case.field_confidences[name] = FieldConfidence.HIGH.value
+
+        inst_raw = data.get("institution_type")
+        if inst_raw is not None and str(inst_raw).strip() and str(inst_raw).lower() != "null":
+            label = str(inst_raw).strip()
+            if label in _LLM_INSTITUTION_MAP:
+                mapped = _LLM_INSTITUTION_MAP[label]
+                if mapped is not None:
+                    case.institution_type = mapped
+                    setattr(case, "_institution_locked", True)
+                elif label == "非保险":
+                    case.institution_type = InstitutionType.NON_INSURANCE
+                    setattr(case, "_institution_locked", True)
+                # 「保险公司」/无法判断 → 不锁定，交给规则从当事人细判
+            else:
+                # 未知标签不锁定，避免脏值写死
+                logger.debug("Unknown institution_type from LLM: %s", label)
+
+        related = data.get("is_insurance_related")
+        if related is True:
+            case.is_insurance_related = True
+        elif related is False:
+            case.is_insurance_related = False
+
+    def _supplement_aux_fields(self, case: ExtractedCase, text: str) -> None:
+        """主抽后补齐日期/金额/依据（轻量正则，不作主抽取）。"""
+        if not case.publish_date:
+            m = PATTERNS["publish_date"].search(text)
+            if m:
+                case.publish_date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                case.field_confidences["publish_date"] = FieldConfidence.MEDIUM.value
+        if not case.fine_amount and case.penalty_content:
+            m = PATTERNS["fine_amount"].search(case.penalty_content)
+            if m:
+                case.fine_amount = m.group(1)
+                case.field_confidences["fine_amount"] = FieldConfidence.MEDIUM.value
+        if not case.fine_amount:
+            m = PATTERNS["fine_amount"].search(text)
+            if m:
+                case.fine_amount = m.group(1)
+                case.field_confidences["fine_amount"] = FieldConfidence.MEDIUM.value
+        if not case.legal_basis:
+            m = PATTERNS["legal_basis"].search(text)
+            if m:
+                case.legal_basis = _matched_text(m).strip()
+                case.field_confidences["legal_basis"] = FieldConfidence.MEDIUM.value
+
+    # ---------- 路径②b：正则主抽（兜底 / regex_first） ----------
+
+    def _from_text_regex(self, text: str, *, file_id: str, source_file: str) -> ExtractedCase | None:
         if not text.strip():
             return None
 
@@ -240,12 +489,7 @@ class ExtractorEngine:
             case.field_confidences["regulator"] = FieldConfidence.HIGH.value
         else:
             # 决定书常见「地方局简称+文号(当事人)」的旧式标题写在文首，早于正文
-            # 抬头「中国XX监管会XX监管局行政处罚决定书」出现；若取首个命中（如
-            # 「重庆保监局」）会丢掉更完整的地区全称。改为收集全文所有候选，优先
-            # 挑「带地区」的具体机关名（而非仅"中国银保监会"这类无地区的裸词——
-            # 裸词虽字数多，但信息量反而不如短小的地区级机关名，纯比长度会选错，
-            # 例如误选申诉条款里提到的"国家金融监督管理总局"而非落款的"辽宁银保
-            # 监局"）；同一档位内再取更长、更靠后（落款通常在文末）的。
+            # 抬头；收集全文候选，优先挑带地区的具体机关名。
             matches = list(PATTERNS["regulator_inline"].finditer(text))
             if matches:
                 def _score(mm: "re.Match") -> tuple:
@@ -269,7 +513,6 @@ class ExtractorEngine:
             case.field_confidences["publish_date"] = FieldConfidence.MEDIUM.value
 
         self._sanitize_fields(case)
-        # sanitize 可能清空噪声当事人；此时再走一次兜底通道
         if not case.party_name:
             party, party_conf = self._extract_party_name(text, skip_label=True)
             if party:
@@ -291,7 +534,6 @@ class ExtractorEngine:
                 cleaned = cls._clean_party_candidate(raw)
                 cleaned = cls._extend_party_across_linebreak(cleaned, text)
                 if cleaned and not cls._is_party_noise(cleaned):
-                    # 机构标签命中优先于后续人名标签
                     pri = 3 if cls._looks_like_institution(cleaned) else 1
                     candidates.append((cleaned, FieldConfidence.HIGH.value, pri))
 
@@ -312,7 +554,6 @@ class ExtractorEngine:
         if not candidates:
             return "", FieldConfidence.LOW.value
 
-        # 去重保序后按 priority 选最优；同分时偏好更长的机构名
         seen: set[str] = set()
         uniq: list[tuple[str, str, int]] = []
         for item in candidates:
@@ -320,19 +561,15 @@ class ExtractorEngine:
                 continue
             seen.add(item[0])
             uniq.append(item)
-        uniq.sort(key=lambda x: (x[2], len(x[0]) if cls._looks_like_institution(x[0]) else 0), reverse=True)
+        uniq.sort(
+            key=lambda x: (x[2], len(x[0]) if cls._looks_like_institution(x[0]) else 0),
+            reverse=True,
+        )
         return uniq[0][0], uniq[0][1]
 
     @staticmethod
     def _extend_party_across_linebreak(name: str, text: str) -> str:
-        """跨断行拼接被截断的当事人名称。
-
-        PDF/OCR 版面常在机构名或人名括注中间断行（版面宽度限制，非语义
-        断句），而当事人相关正则的字符类都排除了 `\\n` 以避免吞并下一
-        标签整段内容。此处针对两类高置信度截断场景做保守的单次跨行拼接：
-          ① 机构名候选恰好在断行处结束（如"...潍坊市\\n奎文支公司"）；
-          ② 人名括注含未闭合左括号（如"张三（时任XX公司\\n分公司经理）"）。
-        """
+        """跨断行拼接被截断的当事人名称。"""
         if not name:
             return name
         idx = text.find(name)
@@ -388,21 +625,17 @@ class ExtractorEngine:
     def _clean_party_candidate(name: str) -> str:
         """单条候选的轻量清洗（不含会清空字段的 junk 判定）。"""
         name = name.strip(" ：:\t　")
-        # 「受处罚人名称:名称:XXX」或捕获组以「名称:」开头
         name = re.sub(r"^(?:名称|姓名)\s*[：:]\s*", "", name)
-        # 标题括号捕获可能带上后续责任人「公司,张三」——只留机构段
         if "，" in name or "," in name:
             parts = re.split(r"[，,]", name, maxsplit=1)
             if ExtractorEngine._looks_like_institution(parts[0]) and not ExtractorEngine._looks_like_institution(parts[1] if len(parts) > 1 else ""):
                 name = parts[0].strip()
-        # 补全/截断括注：保留完整「(以下简称XX)」，缺右括号则截到「以下简称」
         m = re.search(r"^(.+?[（(]以下简称[^）)]*[）)])", name)
         if m:
             name = m.group(1)
         else:
             m = re.search(r"^(.+?[（(]以下简称)", name)
             if m and not re.search(r"[）)]", name[m.end():m.end() + 40]):
-                # 金标常见截断到「(以下简称」；若原文本身缺右括号也按此收束
                 name = m.group(1)
             else:
                 name = re.split(
@@ -411,7 +644,6 @@ class ExtractorEngine:
                     name,
                     maxsplit=1,
                 )[0].strip(" ，,、")
-        # 去掉未闭合的多余右括号（如标题截取残留）
         if name.count(")") + name.count("）") > name.count("(") + name.count("（"):
             name = re.sub(r"[）)]\s*$", "", name).strip()
         return name.strip()[:80]
@@ -421,7 +653,6 @@ class ExtractorEngine:
         """清洗当事人/机关噪声，对齐常见公示截断写法。"""
         if case.party_name:
             name = ExtractorEngine._clean_party_candidate(case.party_name)
-            # 明显噪声：过短、或含非主体词、或仍以标签残留开头
             junk = ("名称的", "留待申请", "复印件", "强制执行", "划款凭证",
                     "付款凭证", "加处罚款", "申请行政复议", "违法行为")
             if (
@@ -436,11 +667,6 @@ class ExtractorEngine:
 
         if case.regulator:
             reg = case.regulator.strip()
-            # 截到机关名为止，去掉「行政处罚决定…」尾巴。
-            # 「金融监督管理总局/银保监会/保监会」后常跟地区+「监管局/监管分局」，
-            # 这些带地区的分支必须排在裸词分支之前——否则懒惰量词一遇到「银保监
-            # 会/保监会」这类短别名就会立即成功匹配并提前截断，丢掉后面的地区部分
-            # （例如「中国银保监会宜昌监管分局」被截断成「中国银保监会」）。
             m = re.search(
                 r"^([\u4e00-\u9fff]{2,40}?(?:"
                 r"金融监督管理总局[\u4e00-\u9fff]{0,10}监管分局"
@@ -457,12 +683,11 @@ class ExtractorEngine:
             if m:
                 case.regulator = m.group(1)
             else:
-                # 非法粘连（如含「申请行政复议」）则清空，留给文号兜底
                 if re.search(r"申请|复议|诉讼|强制执行|行政处罚决", reg):
                     case.regulator = ""
                     case.field_confidences["regulator"] = FieldConfidence.LOW.value
 
-    # ---------- LLM 纠错 ----------
+    # ---------- LLM 纠错（regex_first / 表格低置信度） ----------
 
     def _llm_refine(self, case: ExtractedCase) -> None:
         extracted = {
@@ -481,7 +706,7 @@ class ExtractorEngine:
                 json_mode=True,
                 thinking=ThinkingMode.DISABLED,
             )
-            data = json.loads(resp)
+            data = _parse_json_object(resp)
         except Exception as e:  # noqa: BLE001
             logger.warning("LLM refine failed for %s: %s", case.file_id, e)
             return
@@ -494,7 +719,6 @@ class ExtractorEngine:
 
     # ---------- 校验与置信度 ----------
 
-    # 字段级档位 → 数值；overall 由加权平均得到，避免「字段齐了就 100%」
     _LEVEL_SCORE = {
         FieldConfidence.HIGH.value: 0.92,
         FieldConfidence.MEDIUM.value: 0.72,
@@ -524,13 +748,12 @@ class ExtractorEngine:
             level = case.field_confidences.get(field_name, FieldConfidence.MEDIUM.value)
             score += weight * self._LEVEL_SCORE.get(level, 0.55)
 
-        # 抽取路径微调：纯正则略降、表格/金标略升，避免全部顶满
         method_adj = {
             "regex": -0.03,
             "hybrid": 0.0,
             "table": 0.02,
             "gold": 0.04,
-            "llm": -0.02,
+            "llm": 0.01,
         }.get(case.extraction_method, 0.0)
 
         if total_w <= 0:

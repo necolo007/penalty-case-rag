@@ -8,8 +8,11 @@ from core.redis_client import get_redis
 from engine.embedding.cache import CachedQueryEncoder
 from engine.embedding.provider import create_embedding_provider
 from engine.llm.client import create_llm_client
-from engine.retrieval.assemble import assemble_hybrid_retriever
-from engine.retrieval.hybrid_retriever import HybridRetriever
+from engine.retrieval.assemble import (
+    AnyRetriever,
+    assemble_hybrid_retriever,
+    ensure_sparse_index_loaded,
+)
 from engine.retrieval.query_rewriter import QueryRewriter
 from engine.retrieval.reranker import NoopReranker, Reranker
 from engine.retrieval.risk_predictor import RiskPredictor
@@ -25,7 +28,7 @@ class AppState:
     """应用级单例容器（在 lifespan 中初始化）"""
 
     pool = None
-    retriever: HybridRetriever | None = None
+    retriever: AnyRetriever | None = None
     generator: ReviewGenerator | None = None
     material_reviewer: MaterialReviewer | None = None
     risk_predictor: RiskPredictor | None = None
@@ -44,7 +47,11 @@ async def init_app_state() -> None:
     query_encoder = CachedQueryEncoder(embedder, redis, ttl=settings.EMBEDDING_CACHE_TTL)
 
     synonym_expander = SynonymExpander(pool)
-    rewriter = QueryRewriter(llm, synonym_expander) if llm else _NoLLMRewriter(synonym_expander)
+    rewriter = (
+        QueryRewriter(llm, synonym_expander, use_llm_rewrite=True)
+        if llm
+        else _NoLLMRewriter(synonym_expander)
+    )
     risk_predictor = RiskPredictor(pool, llm_client=llm)
 
     reranker = (
@@ -57,6 +64,11 @@ async def init_app_state() -> None:
         if settings.RERANKER_ENABLED else NoopReranker()
     )
 
+    sparse_index = None
+    backend = (settings.RETRIEVAL_BACKEND or "bge_m3").strip().lower()
+    if backend not in ("legacy_four_way", "legacy", "four_way"):
+        sparse_index = await ensure_sparse_index_loaded(pool)
+
     retriever = assemble_hybrid_retriever(
         settings=settings,
         pool=pool,
@@ -64,6 +76,7 @@ async def init_app_state() -> None:
         risk_predictor=risk_predictor,
         reranker=reranker,
         query_encoder=query_encoder,
+        sparse_index=sparse_index,
     )
 
     generator = ReviewGenerator(llm) if llm else None
@@ -78,8 +91,8 @@ async def init_app_state() -> None:
             pool=pool, locator=locator, retriever=retriever, generator=generator,
         )
     logger.info(
-        "App state initialized (llm=%s, embedding=%s, rerank_cand=%s, fusion=%s)",
-        bool(llm), embedder.model_name,
+        "App state initialized (backend=%s, llm=%s, embedding=%s, rerank_cand=%s, fusion=%s)",
+        settings.RETRIEVAL_BACKEND, bool(llm), embedder.model_name,
         settings.RETRIEVAL_RERANK_CANDIDATES, settings.RETRIEVAL_FUSION_SIZE,
     )
 
@@ -99,7 +112,7 @@ def get_pool():
     return state.pool
 
 
-def get_retriever() -> HybridRetriever:
+def get_retriever() -> AnyRetriever:
     return state.retriever
 
 

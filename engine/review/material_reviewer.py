@@ -1,7 +1,7 @@
 """整篇材料合规审查引擎（任务4核心）。
 
 流程：材料文本 → 切分 → 风险句定位（三重判断）
-      → 逐风险句：四路检索 + 审查意见生成
+      → 逐风险句：相似案例检索 + 审查意见生成
       → 汇总审查报告（风险高亮位置 + 案例归因 + 整改建议 + 可追溯引用）
 """
 
@@ -12,8 +12,8 @@ from dataclasses import asdict, dataclass
 
 import asyncpg
 
+from engine.retrieval.assemble import AnyRetriever
 from engine.retrieval.base import SearchQuery
-from engine.retrieval.hybrid_retriever import HybridRetriever
 from engine.review.generator import ReviewGenerator
 from engine.review.risk_locator import RiskSentence, RiskSentenceLocator
 from engine.review.segmenter import segment_text
@@ -114,7 +114,7 @@ class MaterialReviewer:
         self,
         pool: asyncpg.Pool,
         locator: RiskSentenceLocator,
-        retriever: HybridRetriever,
+        retriever: AnyRetriever,
         generator: ReviewGenerator,
         per_sentence_top_k: int = 5,
         max_risk_sentences: int = 20,

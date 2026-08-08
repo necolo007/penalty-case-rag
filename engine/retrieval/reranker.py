@@ -59,17 +59,24 @@ class Reranker:
         return list(scores)
 
     def _case_text(self, result: SearchResult) -> str:
+        # 违法行为优先：与营销话术/改写查询最对齐的字段
         parts = [
-            result.party_name,
             result.violation_behavior,
-            result.penalty_content,
             " ".join(result.risk_tags or []),
+            result.penalty_content,
+            result.party_name,
         ]
         text = " ".join(p for p in parts if p)
         return text[: self.doc_max_chars]
 
-    async def rerank(self, query_text: str, candidates: list[SearchResult],
-                     top_k: int = 10) -> list[SearchResult]:
+    async def rerank(
+        self,
+        query_text: str,
+        candidates: list[SearchResult],
+        top_k: int = 10,
+        *,
+        aux_query_text: str | None = None,
+    ) -> list[SearchResult]:
         if not candidates:
             return []
         pairs = [[query_text, self._case_text(c)] for c in candidates]
@@ -79,9 +86,31 @@ class Reranker:
             logger.warning("Reranker failed, fallback to RRF order: %s", e)
             return candidates[:top_k]
 
+        aux = (aux_query_text or "").strip()
+        if aux and aux != (query_text or "").strip():
+            aux_pairs = [[aux, self._case_text(c)] for c in candidates]
+            try:
+                aux_scores = await asyncio.to_thread(self._score_pairs, aux_pairs)
+                scores = [max(float(a), float(b)) for a, b in zip(scores, aux_scores)]
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Aux rerank failed, keep primary CE scores: %s", e)
+
         for c, s in zip(candidates, scores):
             c.score = float(s)
         return sorted(candidates, key=lambda c: c.score, reverse=True)[:top_k]
+
+    async def score_candidates(
+        self, query_text: str, candidates: list[SearchResult],
+    ) -> list[float]:
+        """返回与 candidates 等长的 CE 分（normalize∈[0,1]）；失败则空列表。"""
+        if not candidates:
+            return []
+        pairs = [[query_text, self._case_text(c)] for c in candidates]
+        try:
+            return await asyncio.to_thread(self._score_pairs, pairs)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Reranker score_candidates failed: %s", e)
+            return []
 
 
 class NoopReranker(Reranker):
@@ -90,6 +119,17 @@ class NoopReranker(Reranker):
     def __init__(self):  # noqa: D107
         pass
 
-    async def rerank(self, query_text: str, candidates: list[SearchResult],
-                     top_k: int = 10) -> list[SearchResult]:
+    async def rerank(
+        self,
+        query_text: str,
+        candidates: list[SearchResult],
+        top_k: int = 10,
+        *,
+        aux_query_text: str | None = None,
+    ) -> list[SearchResult]:
         return candidates[:top_k]
+
+    async def score_candidates(
+        self, query_text: str, candidates: list[SearchResult],
+    ) -> list[float]:
+        return []

@@ -1,4 +1,4 @@
-"""从金标 raw_text 规则重抽，产出 extracted_cases.jsonl（任务1前置）。
+"""从金标 raw_text 重抽，产出 extracted_cases.jsonl（任务1前置）。
 
 评测口径修正（六次优化）：不再对每条金标行只选「一条最优」候选并强占金标
 case_id——这会在一份文书含多个当事人/多次处罚（一案两罚）时，把两条金标
@@ -8,7 +8,15 @@ case_id——这会在一份文书含多个当事人/多次处罚（一案两罚
 产出的**全部**候选案例原样落盘（不裁剪、不绑定金标 case_id），由
 eval_extraction.py 按 file_id 做二分图匹配后再计算 P/R/F1。
 
-用法：python scripts/reextract_for_eval.py [--limit 100]
+用法：
+  # 正则基线（默认，无 LLM）
+  python scripts/reextract_for_eval.py --mode regex_first \\
+    --gold data/eval/gold_extraction_cases.cleaned.jsonl
+
+  # LLM 主抽（需配置 LLM_API_KEY）
+  python scripts/reextract_for_eval.py --mode llm_first --with-llm \\
+    --gold data/eval/gold_extraction_cases.cleaned.jsonl \\
+    --output data/eval/extracted_cases_llm.jsonl --limit 100
 """
 
 from __future__ import annotations
@@ -49,10 +57,26 @@ def _resolve_raw_text(file_id: str, dirs: list[Path]) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="金标 raw_text 规则重抽（按 file_id 输出全部候选案例）")
+    parser = argparse.ArgumentParser(description="金标 raw_text 重抽（按 file_id 输出全部候选案例）")
     parser.add_argument("--gold", default="data/eval/gold_extraction_cases.jsonl")
     parser.add_argument("--output", default="data/eval/extracted_cases.jsonl")
     parser.add_argument("--limit", type=int, default=None, help="限制 file_id 数量（非金标行数）")
+    parser.add_argument(
+        "--mode",
+        choices=("llm_first", "regex_first"),
+        default="regex_first",
+        help="抽取模式；默认 regex_first 保证离线可复现",
+    )
+    parser.add_argument(
+        "--with-llm",
+        action="store_true",
+        help="启用 LLM 客户端（llm_first 必需；也可用于 regex_first 低置信度纠错）",
+    )
+    parser.add_argument(
+        "--llm-refine",
+        action="store_true",
+        help="regex_first 时启用低置信度 LLM 纠错（需 --with-llm）",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
@@ -76,7 +100,23 @@ def main() -> None:
         _ROOT / settings.DATA_DIR / "raw_text",
         _ROOT.parent / _DEFAULT_COMP / "raw_text",
     ]
-    engine = ExtractorEngine(llm_client=None, use_llm_refine=False)
+
+    llm = None
+    if args.with_llm:
+        if not (settings.LLM_API_KEY or "").strip():
+            raise SystemExit("--with-llm 需要配置 LLM_API_KEY")
+        from engine.llm.client import create_llm_client
+
+        llm = create_llm_client(settings)
+
+    if args.mode == "llm_first" and llm is None:
+        raise SystemExit("llm_first 需要同时传入 --with-llm")
+
+    engine = ExtractorEngine(
+        llm_client=llm,
+        use_llm_refine=bool(args.llm_refine and llm is not None),
+        extraction_mode=args.mode,
+    )
     filt = InsuranceFilter(dict_dir=_ROOT / settings.DATA_DIR / "dictionaries")
 
     out_path = Path(args.output)
@@ -84,9 +124,10 @@ def main() -> None:
         out_path = _ROOT / out_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    written = missing = 0
+    written = missing = llm_n = regex_n = 0
+    total = len(file_ids)
     with out_path.open("w", encoding="utf-8") as f:
-        for file_id in file_ids:
+        for i, file_id in enumerate(file_ids, 1):
             text = _resolve_raw_text(file_id, raw_dirs)
             if not text.strip():
                 missing += 1
@@ -101,6 +142,11 @@ def main() -> None:
                 cand, _ = filt.is_candidate(case.party_name, case.violation_behavior, case.legal_basis)
                 inst = case.institution_type
                 inst_val = inst.value if hasattr(inst, "value") else str(inst)
+                method = case.extraction_method
+                if method == "llm":
+                    llm_n += 1
+                elif method == "regex":
+                    regex_n += 1
                 row = {
                     "file_id": file_id,
                     "pred_idx": idx,
@@ -112,11 +158,18 @@ def main() -> None:
                     "institution_type": inst_val,
                     "overall_confidence": case.overall_confidence,
                     "is_insurance_related": bool(score.is_insurance or cand),
+                    "extraction_method": method,
+                    "case_summary": case.case_summary or "",
                 }
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
                 written += 1
+            if i % 10 == 0 or i == total:
+                print(f"  progress {i}/{total} written={written} missing={missing}", flush=True)
 
-    print(f"Wrote {written} extracted cases from {len(file_ids)} files → {out_path} (missing_raw={missing})")
+    print(
+        f"Wrote {written} extracted cases from {total} files → {out_path} "
+        f"(missing_raw={missing}, method_llm={llm_n}, method_regex={regex_n}, mode={args.mode})"
+    )
 
 
 if __name__ == "__main__":

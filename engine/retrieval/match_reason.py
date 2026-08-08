@@ -15,6 +15,8 @@ _CHANNEL_LABELS = {
     "vector": "语义",
     "tag": "风险标签",
     "rule": "规则词典",
+    "dense": "稠密语义",
+    "sparse": "稀疏词项",
 }
 
 _TOKEN_RE = re.compile(r"[\u4e00-\u9fff]{2,8}|[A-Za-z0-9]{2,}")

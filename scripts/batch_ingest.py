@@ -2,7 +2,7 @@
 
 用法：
   python scripts/batch_ingest.py --dir data/raw
-  python scripts/batch_ingest.py --manifest data/eval/example/example_ingest_manifest.jsonl --limit 50
+  python scripts/batch_ingest.py --manifest path/to/ingest_manifest.jsonl --limit 50
 """
 
 import argparse

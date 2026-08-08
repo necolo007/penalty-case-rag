@@ -240,19 +240,30 @@ async def import_cases(
 
 
 async def _flush_embeddings(pool, embedder, case_ids: list[str], texts: list[str]) -> None:
-    vectors = embedder.encode_documents(texts)
+    from engine.embedding.store import (
+        UPSERT_EMBEDDING_SQL,
+        encode_documents_maybe_dual,
+        upsert_embedding_args,
+    )
+    from engine.retrieval.assemble import get_sparse_index
+
+    dense_list, sparse_list = encode_documents_maybe_dual(embedder, texts)
+    sparse_index = get_sparse_index()
     async with pool.acquire() as conn:
-        for case_id, vec in zip(case_ids, vectors, strict=True):
+        for idx, case_id in enumerate(case_ids):
+            sparse = sparse_list[idx] if sparse_list is not None else None
             await conn.execute(
-                """
-                INSERT INTO case_embeddings (case_id, embedding, embedding_model)
-                VALUES ($1, $2::vector, $3)
-                ON CONFLICT (case_id) DO UPDATE SET
-                    embedding = EXCLUDED.embedding,
-                    embedding_model = EXCLUDED.embedding_model
-                """,
-                case_id, to_pgvector(vec), embedder.model_name,
+                UPSERT_EMBEDDING_SQL,
+                *upsert_embedding_args(
+                    case_id,
+                    dense_list[idx],
+                    embedder.model_name,
+                    sparse=sparse,
+                    to_pgvector=to_pgvector,
+                ),
             )
+            if sparse is not None:
+                sparse_index.upsert(case_id, sparse)
     print(f"  embedded {len(case_ids)} cases")
 
 

@@ -6,6 +6,17 @@ from typing import Optional
 
 
 @dataclass
+class RetrievalResponse:
+    query: str
+    rewritten_query: str
+    predicted_risk_ids: list[str]
+    results: list["SearchResult"]
+    took_ms: int
+    channel_stats: dict[str, int] = field(default_factory=dict)
+    predicted_cn_tags: list[str] = field(default_factory=list)
+
+
+@dataclass
 class SearchQuery:
     """检索请求（对齐 retrieval_train_queries / test_questions）"""
     query_text: str

@@ -17,7 +17,6 @@ from pathlib import Path
 import asyncpg
 
 from core.dates import parse_optional_date
-from core.db import to_pgvector
 from engine.classification.entity_normalizer import normalize_entity
 from engine.classification.insurance_filter import InsuranceFilter
 from engine.classification.risk_tagger import RiskTagger
@@ -255,8 +254,15 @@ class IngestOrchestrator:
             case.violation_behavior, case.penalty_content, " ".join(case.risk_tags),
         ]))
         embedding = None
+        sparse = None
         if case.is_insurance_related and embedding_text.strip():
-            embedding = self.embedder.encode_documents([embedding_text])[0]
+            from engine.embedding.store import encode_documents_maybe_dual
+
+            dense_list, sparse_list = encode_documents_maybe_dual(
+                self.embedder, [embedding_text],
+            )
+            embedding = dense_list[0]
+            sparse = sparse_list[0] if sparse_list is not None else None
 
         last_err: Exception | None = None
         cid = case_id
@@ -264,7 +270,7 @@ class IngestOrchestrator:
             try:
                 await self._insert_case_row(
                     cid, case, regulator=regulator, publish_date=publish_date,
-                    embedding=embedding,
+                    embedding=embedding, sparse=sparse,
                 )
                 return
             except asyncpg.UniqueViolationError as e:
@@ -284,6 +290,7 @@ class IngestOrchestrator:
         regulator: str | None,
         publish_date: str | None,
         embedding: list[float] | None,
+        sparse: dict[str, float] | None = None,
     ) -> None:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -313,13 +320,22 @@ class IngestOrchestrator:
                 )
 
                 if embedding is not None:
+                    from core.db import to_pgvector
+                    from engine.embedding.store import UPSERT_EMBEDDING_SQL, upsert_embedding_args
+                    from engine.retrieval.assemble import get_sparse_index
+
                     await conn.execute(
-                        """
-                        INSERT INTO case_embeddings (case_id, embedding, embedding_model)
-                        VALUES ($1, $2::vector, $3)
-                        """,
-                        case_id, to_pgvector(embedding), self.embedder.model_name,
+                        UPSERT_EMBEDDING_SQL,
+                        *upsert_embedding_args(
+                            case_id,
+                            embedding,
+                            self.embedder.model_name,
+                            sparse=sparse,
+                            to_pgvector=to_pgvector,
+                        ),
                     )
+                    if sparse is not None:
+                        get_sparse_index().upsert(case_id, sparse)
 
                 # 主体关联表（任务2交付物）
                 entity = normalize_entity(case.party_name)

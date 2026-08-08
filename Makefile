@@ -1,7 +1,7 @@
 .PHONY: install install-local-models db worker api test lint export \
 	docker-ocr-build docker-ocr-test docker-up docker-postgres-build docker-postgres-up \
 	link-data import-gold web-install web-dev web-build reindex-embed sync-dict \
-	eval eval-cheap eval-rerank eval-all
+	eval eval-cheap eval-rerank eval-ab eval-all
 
 # Windows / uv 环境下保证顶层包可导入
 export PYTHONPATH := .
@@ -62,7 +62,10 @@ eval:
 	python scripts/run_eval.py --retrieval-limit 50
 
 eval-rerank:
-	python scripts/run_eval.py --retrieval-limit 30 --rerank
+	python scripts/eval_retrieval_local.py --split test --limit 30 --rerank --backend bge_m3
+
+eval-ab:
+	python scripts/compare_retrieval_backends.py --split test --limit 30 --rerank
 
 eval-all: eval-cheap eval-rerank
 

@@ -22,8 +22,9 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.1
     LLM_MAX_RETRIES: int = 3
 
-    # ---- Embedding（云端 Qwen 主 + 本地 BGE 兜底） ----
-    EMBEDDING_PROVIDER: str = "cloud"  # cloud | local
+    # ---- Embedding ----
+    # local_bge_m3=任务3默认（FlagEmbedding BGE-M3）；cloud / local 供 legacy 回滚
+    EMBEDDING_PROVIDER: str = "local_bge_m3"  # local_bge_m3 | cloud | local
     EMBEDDING_API_KEY: str = ""
     EMBEDDING_BASE_URL: str = "https://tokendance.space/gateway/v1"
     EMBEDDING_MODEL: str = "qwen-text-embedding-v4"
@@ -31,10 +32,16 @@ class Settings(BaseSettings):
     EMBEDDING_INSTRUCT: str = (
         "Given an insurance marketing claim, retrieve similar regulatory penalty cases"
     )
-    EMBEDDING_FALLBACK: str = "local"  # local | none
+    EMBEDDING_FALLBACK: str = "local"  # local | none（仅 cloud 模式）
     EMBEDDING_CACHE_TTL: int = 3600
     EMBEDDING_MODEL_LOCAL: str = "BAAI/bge-large-zh-v1.5"
     EMBEDDING_DEVICE: str = "cpu"
+
+    # ---- BGE-M3（FlagEmbedding） ----
+    BGE_M3_MODEL: str = "BAAI/bge-m3"
+    BGE_M3_DEVICE: str = "cpu"  # cuda | cpu
+    BGE_M3_BATCH_SIZE: int = 8
+    BGE_M3_MAX_LENGTH: int = 8192
 
     # ---- Reranker ----
     RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
@@ -43,19 +50,34 @@ class Settings(BaseSettings):
     RERANKER_BATCH_SIZE: int = 16
     RERANKER_DOC_MAX_CHARS: int = 1200
 
+    # ---- 检索后端：bge_m3（默认）| legacy_four_way ----
+    RETRIEVAL_BACKEND: str = "bge_m3"
+    # HyDE：LLM 生成假想违法事实再 dense 召回（需可用 LLM；无 Key 时自动跳过）
+    RETRIEVAL_HYDE_ENABLED: bool = True
+    # HyDE 文本参与 CE：与口语 query 双路打分取 max（test n15 上劣化，默认关）
+    RETRIEVAL_HYDE_RERANK: bool = False
+
     # ---- 检索召回量 / 融合 / 精排 ----
+    # legacy 四路
     RECALL_BM25: int = 80
     RECALL_VECTOR: int = 100
     RECALL_TAG: int = 80
     RECALL_RULE: int = 30
-    RETRIEVAL_FUSION_SIZE: int = 100
-    RETRIEVAL_RERANK_CANDIDATES: int = 60
+    # BGE-M3 dense + sparse
+    RECALL_DENSE: int = 200
+    RECALL_SPARSE: int = 100
+    RETRIEVAL_FUSION_SIZE: int = 200
+    RETRIEVAL_RERANK_CANDIDATES: int = 200
     RRF_K: int = 60
     RRF_W_BM25: float = 1.15
     RRF_W_VECTOR: float = 1.45
     RRF_W_TAG: float = 1.0
     RRF_W_RULE: float = 1.2
-    RRF_MULTI_CHANNEL_BONUS: float = 0.08
+    RRF_W_DENSE: float = 1.5
+    RRF_W_DENSE_RAW: float = 1.6
+    RRF_W_DENSE_HYDE: float = 1.55
+    RRF_W_SPARSE: float = 0.55
+    RRF_MULTI_CHANNEL_BONUS: float = 0.05
     CN_TAG_PREDICT_MAX: int = 3
     CN_TAG_FINAL_MAX: int = 5
     CN_TAG_BM25_APPEND: int = 2
@@ -63,6 +85,10 @@ class Settings(BaseSettings):
     TAG_BACKFILL_TOP_CASES: int = 5
 
     # ---- 抽取 / 解析 ----
+    # llm_first：长文决定书/OCR 用提示词主抽，正则仅作无 LLM/失败兜底
+    # regex_first：正则主抽，低置信度再 LLM 纠错（旧路径）
+    EXTRACTION_MODE: str = "llm_first"
+    EXTRACTION_LLM_MAX_CHARS: int = 8000
     LLM_REFINE_THRESHOLD: float = 0.6
     PARSE_CONFIDENCE_THRESHOLD: float = 0.5
 
@@ -80,11 +106,21 @@ class Settings(BaseSettings):
     SUBMISSION_RISK_STYLE: str = "cn"  # cn=中文标签；competition=R00x
 
     def rrf_channel_weights(self) -> dict[str, float]:
+        """legacy_four_way 通道权重。"""
         return {
             "bm25": self.RRF_W_BM25,
             "vector": self.RRF_W_VECTOR,
             "tag": self.RRF_W_TAG,
             "rule": self.RRF_W_RULE,
+        }
+
+    def m3_rrf_channel_weights(self) -> dict[str, float]:
+        """bge_m3：原文 dense / 改写 dense / HyDE dense / sparse。"""
+        return {
+            "dense_raw": self.RRF_W_DENSE_RAW,
+            "dense": self.RRF_W_DENSE,
+            "dense_hyde": self.RRF_W_DENSE_HYDE,
+            "sparse": self.RRF_W_SPARSE,
         }
 
 

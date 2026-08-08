@@ -1,18 +1,17 @@
-"""诊断脚本：分通道统计"第一阶段召回"是否覆盖金标案例（不含精排，跑得快）。
+"""诊断脚本：分通道统计第一阶段召回是否覆盖金标（不含精排）。
 
-用于定位 train/test 检索瓶颈到底出在"召回不够广"还是"精排排序不够好"，
-以及四路召回（BM25/向量/标签/规则）中具体是哪一路对目标 split 覆盖不足。
+默认后端 bge_m3（dense/sparse）；--backend legacy_four_way 走四路。
 
 用法：
   python scripts/diagnose_recall.py --split train --limit 100
-  python scripts/diagnose_recall.py --split test --limit 100 --llm-rewrite
+  python scripts/diagnose_recall.py --split test --limit 100 --backend bge_m3
+  python scripts/diagnose_recall.py --split test --limit 100 --backend legacy_four_way
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 from pathlib import Path
 
@@ -32,8 +31,10 @@ from engine.classification.competition_label_map import (
 from engine.embedding.cache import CachedQueryEncoder
 from engine.embedding.provider import create_embedding_provider
 from engine.llm.client import create_llm_client
-from engine.retrieval.assemble import assemble_hybrid_retriever
+from engine.retrieval.assemble import assemble_hybrid_retriever, ensure_sparse_index_loaded
 from engine.retrieval.base import SearchQuery
+from engine.retrieval.hybrid_retriever import HybridRetriever
+from engine.retrieval.m3_retriever import M3HybridRetriever
 from engine.retrieval.merger import reciprocal_rank_fusion
 from engine.retrieval.query_rewriter import QueryRewriter
 from engine.retrieval.reranker import NoopReranker
@@ -47,12 +48,63 @@ def _gold_relevant(item: dict) -> set[str]:
     return {c["case_id"] for c in payload.get("relevant_cases", [])}
 
 
+async def _channels_legacy(retriever: HybridRetriever, q: dict) -> dict:
+    rewritten_query, predicted_risk_ids = await asyncio.gather(
+        retriever.rewriter.rewrite(q["query_text"]),
+        retriever.risk_predictor.predict(q["query_text"]),
+    )
+    predicted_cn_tags = predict_cn_tags_by_keywords(
+        q["query_text"], max_tags=retriever.cn_tag_predict_max,
+    )
+    if predicted_cn_tags:
+        for cid in cn_tags_to_competition_ids(predicted_cn_tags):
+            if cid not in predicted_risk_ids:
+                predicted_risk_ids.append(cid)
+    predicted_risk_ids = list(dict.fromkeys(predicted_risk_ids))[: retriever.risk_id_cap]
+
+    bm25_text = rewritten_query
+    if predicted_cn_tags:
+        bm25_text = f"{rewritten_query} {' '.join(predicted_cn_tags[: retriever.cn_tag_bm25_append])}"
+
+    query_embedding = await retriever.query_encoder.encode_query(rewritten_query)
+    search_q = SearchQuery(query_text=q["query_text"], question_id=q["question_id"], top_k=10)
+    return {
+        "bm25": await retriever.bm25.retrieve(search_q, search_text=bm25_text),
+        "vector": await retriever.vector.retrieve(search_q, query_embedding=query_embedding),
+        "tag": await retriever.tag.retrieve(
+            search_q, predicted_risk_ids=predicted_risk_ids, predicted_cn_tags=predicted_cn_tags,
+        ),
+        "rule": await retriever.rule.retrieve(search_q),
+    }
+
+
+async def _channels_m3(retriever: M3HybridRetriever, q: dict) -> dict:
+    rewritten_query = await retriever.rewriter.rewrite(q["query_text"])
+    raw_dense, _ = await retriever.query_encoder.encode_query_dual(q["query_text"])
+    rw_dense, rw_sparse = await retriever.query_encoder.encode_query_dual(rewritten_query)
+    search_q = SearchQuery(query_text=q["query_text"], question_id=q["question_id"], top_k=10)
+    out = {
+        "dense_raw": await retriever.dense.retrieve(search_q, query_embedding=raw_dense),
+        "dense": await retriever.dense.retrieve(search_q, query_embedding=rw_dense),
+        "sparse": await retriever.sparse.retrieve(search_q, query_sparse=rw_sparse),
+    }
+    if getattr(retriever, "enable_hyde", False) and hasattr(retriever.rewriter, "hyde"):
+        hyde_text = (await retriever.rewriter.hyde(q["query_text"]) or "").strip()
+        if hyde_text:
+            hyde_dense, _ = await retriever.query_encoder.encode_query_dual(hyde_text)
+            out["dense_hyde"] = await retriever.dense.retrieve(
+                search_q, query_embedding=hyde_dense,
+            )
+    return out
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="第一阶段召回诊断（分通道）")
     parser.add_argument("--split", choices=["train", "test"], default="test")
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--llm-rewrite", action="store_true")
     parser.add_argument("--fusion-top", type=int, default=50, help="RRF 融合后检查的窗口")
+    parser.add_argument("--backend", default=None, help="bge_m3 | legacy_four_way")
     args = parser.parse_args()
 
     if args.split == "train":
@@ -70,14 +122,25 @@ async def main() -> None:
         gold_map[qid] = _gold_relevant(item)
 
     settings = get_settings()
+    if args.backend:
+        settings.RETRIEVAL_BACKEND = args.backend
+    backend = (settings.RETRIEVAL_BACKEND or "bge_m3").strip().lower()
+    is_legacy = backend in ("legacy_four_way", "legacy", "four_way")
+
     pool = await create_pool()
     redis = await get_redis()
     embedder = create_embedding_provider(settings)
     expander = SynonymExpander(pool)
-    llm_client = create_llm_client(settings) if args.llm_rewrite else None
-    rewriter = QueryRewriter(llm_client, expander) if llm_client else SynonymOnlyRewriter(expander)
+    need_llm = bool(args.llm_rewrite or settings.RETRIEVAL_HYDE_ENABLED)
+    llm_client = create_llm_client(settings) if need_llm else None
+    rewriter = (
+        QueryRewriter(llm_client, expander, use_llm_rewrite=bool(args.llm_rewrite))
+        if llm_client
+        else SynonymOnlyRewriter(expander)
+    )
     risk_predictor = RiskPredictor(pool, llm_client=llm_client)
 
+    sparse_index = None if is_legacy else await ensure_sparse_index_loaded(pool)
     retriever = assemble_hybrid_retriever(
         settings=settings,
         pool=pool,
@@ -85,15 +148,20 @@ async def main() -> None:
         risk_predictor=risk_predictor,
         reranker=NoopReranker(),
         query_encoder=CachedQueryEncoder(embedder, redis, ttl=settings.EMBEDDING_CACHE_TTL),
+        sparse_index=sparse_index,
     )
 
+    if is_legacy:
+        channels = ("bm25", "vector", "tag", "rule")
+    else:
+        channels = ("dense_raw", "dense", "sparse")
+        if getattr(settings, "RETRIEVAL_HYDE_ENABLED", False):
+            channels = ("dense_raw", "dense", "dense_hyde", "sparse")
     n = 0
-    channel_hit = {"bm25": 0, "vector": 0, "tag": 0, "rule": 0}
-    channel_total_recall_pool = {"bm25": 0, "vector": 0, "tag": 0, "rule": 0}
+    channel_hit = {ch: 0 for ch in channels}
+    channel_total_recall_pool = {ch: 0 for ch in channels}
     fused_hit = 0
     no_gold = 0
-    empty_tag_channel = 0
-    empty_rule_channel = 0
 
     for q in questions:
         qid = q["question_id"]
@@ -103,39 +171,10 @@ async def main() -> None:
             continue
         n += 1
 
-        rewritten_query, predicted_risk_ids = await asyncio.gather(
-            retriever.rewriter.rewrite(q["query_text"]),
-            retriever.risk_predictor.predict(q["query_text"]),
-        )
-        predicted_cn_tags = predict_cn_tags_by_keywords(
-            q["query_text"], max_tags=retriever.cn_tag_predict_max,
-        )
-        if predicted_cn_tags:
-            for cid in cn_tags_to_competition_ids(predicted_cn_tags):
-                if cid not in predicted_risk_ids:
-                    predicted_risk_ids.append(cid)
-        predicted_risk_ids = list(dict.fromkeys(predicted_risk_ids))[: retriever.risk_id_cap]
-
-        bm25_text = rewritten_query
-        if predicted_cn_tags:
-            bm25_text = f"{rewritten_query} {' '.join(predicted_cn_tags[: retriever.cn_tag_bm25_append])}"
-
-        query_embedding = await retriever.query_encoder.encode_query(rewritten_query)
-        search_q = SearchQuery(query_text=q["query_text"], question_id=qid, top_k=10)
-
-        channel_results = {
-            "bm25": await retriever.bm25.retrieve(search_q, search_text=bm25_text),
-            "vector": await retriever.vector.retrieve(search_q, query_embedding=query_embedding),
-            "tag": await retriever.tag.retrieve(
-                search_q, predicted_risk_ids=predicted_risk_ids, predicted_cn_tags=predicted_cn_tags,
-            ),
-            "rule": await retriever.rule.retrieve(search_q),
-        }
-
-        if not predicted_cn_tags and not predicted_risk_ids:
-            empty_tag_channel += 1
-        if not channel_results["rule"]:
-            empty_rule_channel += 1
+        if is_legacy:
+            channel_results = await _channels_legacy(retriever, q)  # type: ignore[arg-type]
+        else:
+            channel_results = await _channels_m3(retriever, q)  # type: ignore[arg-type]
 
         for ch, results in channel_results.items():
             ids = {r.case_id for r in results}
@@ -145,23 +184,42 @@ async def main() -> None:
                 channel_hit[ch] += 1
 
         fused = reciprocal_rank_fusion(
-            channel_results, k=retriever.rrf_k, top_k=args.fusion_top,
+            {
+                k: v for k, v in channel_results.items()
+                if k in ("dense_raw", "dense", "dense_hyde")
+            }
+            if not is_legacy else channel_results,
+            k=retriever.rrf_k, top_k=args.fusion_top,
             weights=retriever.channel_weights, multi_channel_bonus=retriever.multi_channel_bonus,
         )
-        fused_ids = {r.case_id for r in fused}
-        if fused_ids & relevant:
+        # 与线上一致：sparse 仅补位
+        if not is_legacy:
+            seen = {r.case_id for r in fused}
+            for r in channel_results.get("sparse", []):
+                if r.case_id in seen:
+                    continue
+                if len(fused) >= args.fusion_top:
+                    break
+                fused.append(r)
+                seen.add(r.case_id)
+        if {r.case_id for r in fused} & relevant:
             fused_hit += 1
 
         if n % 20 == 0:
             print(f"  progress {n}")
 
-    print(f"\n=== split={args.split} n={n}（跳过无金标 {no_gold} 条）llm_rewrite={args.llm_rewrite} ===")
-    print(f"RRF Top-{args.fusion_top} 命中金标比例: {fused_hit / n:.2%}")
-    print("\n各通道自身候选中包含金标案例的比例（该通道单独能否捞到正确答案）：")
-    for ch in ("bm25", "vector", "tag", "rule"):
-        print(f"  {ch:8s}: hit={channel_hit[ch] / n:.2%}  非空候选比例={channel_total_recall_pool[ch] / n:.2%}")
-    print(f"\n标签通道无预测标签（tag/risk_id 均为空）比例: {empty_tag_channel / n:.2%}")
-    print(f"规则通道空召回比例: {empty_rule_channel / n:.2%}")
+    print(
+        f"\n=== split={args.split} backend={backend} n={n}"
+        f"（跳过无金标 {no_gold} 条）llm_rewrite={args.llm_rewrite} ==="
+    )
+    print(f"RRF Top-{args.fusion_top} 命中金标比例: {fused_hit / n:.2%}" if n else "n=0")
+    print("\n各通道自身候选中包含金标案例的比例：")
+    for ch in channels:
+        if n:
+            print(
+                f"  {ch:8s}: hit={channel_hit[ch] / n:.2%}  "
+                f"非空候选比例={channel_total_recall_pool[ch] / n:.2%}"
+            )
 
     await close_pool()
     await close_redis()

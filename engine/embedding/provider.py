@@ -168,7 +168,19 @@ class FallbackEmbeddingProvider(BaseEmbeddingProvider):
 
 def create_embedding_provider(settings: Settings | None = None) -> BaseEmbeddingProvider:
     settings = settings or get_settings()
-    if settings.EMBEDDING_PROVIDER == "cloud":
+    provider = (settings.EMBEDDING_PROVIDER or "local_bge_m3").strip().lower()
+
+    if provider in ("local_bge_m3", "bge_m3", "bge-m3"):
+        from engine.embedding.bge_m3_provider import BgeM3EmbeddingProvider
+
+        return BgeM3EmbeddingProvider(
+            model=settings.BGE_M3_MODEL,
+            device=settings.BGE_M3_DEVICE or settings.EMBEDDING_DEVICE,
+            batch_size=settings.BGE_M3_BATCH_SIZE,
+            max_length=settings.BGE_M3_MAX_LENGTH,
+        )
+
+    if provider == "cloud":
         cloud = CloudEmbeddingProvider(
             api_key=settings.EMBEDDING_API_KEY,
             base_url=settings.EMBEDDING_BASE_URL,
@@ -179,6 +191,7 @@ def create_embedding_provider(settings: Settings | None = None) -> BaseEmbedding
         if settings.EMBEDDING_FALLBACK == "local":
             return FallbackEmbeddingProvider(cloud, settings)
         return cloud
+
     return LocalEmbeddingProvider(
         model=settings.EMBEDDING_MODEL_LOCAL,
         device=settings.EMBEDDING_DEVICE,

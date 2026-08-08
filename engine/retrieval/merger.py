@@ -11,6 +11,8 @@ DEFAULT_CHANNEL_WEIGHTS = {
     "vector": 1.45,  # 口语↔法言法语主要靠语义
     "tag": 1.0,      # 标签收紧后恢复中等权重
     "rule": 1.2,
+    "dense": 1.4,
+    "sparse": 1.0,
 }
 
 

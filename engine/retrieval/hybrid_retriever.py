@@ -1,23 +1,22 @@
-"""四路混合检索引擎（任务3核心）。
+"""四路混合检索引擎（任务3 legacy 后端）。
 
-管线（对齐设计文档 §2.6.5 / §4.3，顺序不可变更）：
-  原始 query → LLM 改写（强制） → encode_queries(+instruct)
+默认生产请用 M3HybridRetriever（RETRIEVAL_BACKEND=bge_m3）。
+本模块在 RETRIEVAL_BACKEND=legacy_four_way 时装配：
+  原始 query → LLM 改写 → encode_queries
              → BM25 / 向量 / 标签 / 规则 四路并行召回
-             → 候选合并去重 + RRF 融合 → Reranker 精排 → Top-K + 相似理由
+             → RRF 融合 → Reranker 精排 → Top-K + 相似理由
 """
 
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
-
 from engine.classification.competition_label_map import (
     cn_tags_to_competition_ids,
     predict_cn_tags_by_keywords,
     resolve_final_cn_tags,
 )
 from engine.embedding.cache import CachedQueryEncoder
-from engine.retrieval.base import SearchQuery, SearchResult
+from engine.retrieval.base import RetrievalResponse, SearchQuery, SearchResult
 from engine.retrieval.bm25_retriever import BM25Retriever
 from engine.retrieval.match_reason import build_match_reason
 from engine.retrieval.merger import DEFAULT_CHANNEL_WEIGHTS, reciprocal_rank_fusion
@@ -30,16 +29,7 @@ from engine.retrieval.vector_retriever import VectorRetriever
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class RetrievalResponse:
-    query: str
-    rewritten_query: str
-    predicted_risk_ids: list[str]
-    results: list[SearchResult]
-    took_ms: int
-    channel_stats: dict[str, int] = field(default_factory=dict)
-    predicted_cn_tags: list[str] = field(default_factory=list)
+__all__ = ["HybridRetriever", "RetrievalResponse"]
 
 
 class HybridRetriever:

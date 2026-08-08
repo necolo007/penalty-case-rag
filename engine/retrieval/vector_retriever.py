@@ -14,9 +14,11 @@ from engine.retrieval.filters import CASE_SELECT_FIELDS, build_filters
 class VectorRetriever(BaseRetriever):
     channel = "vector"
 
-    def __init__(self, pool: asyncpg.Pool, recall_size: int = 100):
+    def __init__(self, pool: asyncpg.Pool, recall_size: int = 100, *, channel: str | None = None):
         self.pool = pool
         self.recall_size = recall_size
+        if channel:
+            self.channel = channel
 
     async def retrieve(self, query: SearchQuery, *, query_embedding: list[float] | None = None,
                        **_) -> list[SearchResult]:

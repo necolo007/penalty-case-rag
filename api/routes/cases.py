@@ -177,6 +177,12 @@ async def _ensure_tags_and_embedding(pool, case_id: str, row) -> dict:
             from core.config import get_settings as _gs
             from core.db import to_pgvector
             from engine.embedding.provider import create_embedding_provider
+            from engine.embedding.store import (
+                UPSERT_EMBEDDING_SQL,
+                encode_documents_maybe_dual,
+                upsert_embedding_args,
+            )
+            from engine.retrieval.assemble import get_sparse_index
 
             text = " ".join(filter(None, [
                 row["violation_behavior"] or "",
@@ -185,17 +191,20 @@ async def _ensure_tags_and_embedding(pool, case_id: str, row) -> dict:
             ])).strip()
             if text:
                 embedder = create_embedding_provider(_gs())
-                vec = embedder.encode_documents([text])[0]
+                dense_list, sparse_list = encode_documents_maybe_dual(embedder, [text])
+                sparse = sparse_list[0] if sparse_list is not None else None
                 await pool.execute(
-                    """
-                    INSERT INTO case_embeddings (case_id, embedding, embedding_model)
-                    VALUES ($1, $2::vector, $3)
-                    ON CONFLICT (case_id) DO UPDATE
-                    SET embedding = EXCLUDED.embedding,
-                        embedding_model = EXCLUDED.embedding_model
-                    """,
-                    case_id, to_pgvector(vec), embedder.model_name,
+                    UPSERT_EMBEDDING_SQL,
+                    *upsert_embedding_args(
+                        case_id,
+                        dense_list[0],
+                        embedder.model_name,
+                        sparse=sparse,
+                        to_pgvector=to_pgvector,
+                    ),
                 )
+                if sparse is not None:
+                    get_sparse_index().upsert(case_id, sparse)
                 updated["embedded"] = True
         except Exception:  # noqa: BLE001
             logger.exception("confirm: embedding failed for %s", case_id)
