@@ -1,7 +1,8 @@
-"""用文档文本重建 case_embeddings（dense + 可选 sparse）。
+"""用「违规行为 + 案件总结」重建 case_embeddings（dense + 可选 sparse）。
 
 用法：python scripts/reindex_embeddings.py [--limit 50]
 BGE-M3 路径会同时写入 sparse_weights；legacy dense-only 仅写向量。
+不再拼 raw_text / risk_tags，避免文书通用套话稀释检索信号。
 """
 
 from __future__ import annotations
@@ -9,43 +10,22 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import re
 
 from core.config import get_settings
 from core.db import close_pool, create_pool, to_pgvector
+from engine.embedding.case_text import build_case_embed_text
 from engine.embedding.provider import create_embedding_provider
 from engine.embedding.store import UPSERT_EMBEDDING_SQL, encode_documents_maybe_dual, upsert_embedding_args
 from engine.retrieval.assemble import get_sparse_index
 
 logger = logging.getLogger(__name__)
 
-_BOILERPLATE = re.compile(
-    r"(账户名称|开户银行|开户账号|如不服本处罚|行政复议|行政诉讼|"
-    r"手机扫一扫|缴纳罚款|加处罚款).{0,80}",
-    re.S,
-)
-
-
-def _clean_raw(text: str, max_chars: int = 1200) -> str:
-    if not text:
-        return ""
-    cleaned = _BOILERPLATE.sub(" ", text)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned[:max_chars]
-
 
 def build_embed_text(row) -> str:
-    tags = " ".join(row["risk_tags"] or [])
-    raw = _clean_raw(row["raw_text"] or "")
-    parts = [
-        row["violation_behavior"] or "",
-        row["penalty_content"] or "",
-        tags,
-        row["case_summary"] or "",
-        raw,
-    ]
-    text = " ".join(p.strip() for p in parts if p and p.strip())
-    return text[:2000] if text else "保险监管处罚案例"
+    return build_case_embed_text(
+        violation_behavior=row["violation_behavior"],
+        case_summary=row["case_summary"],
+    )
 
 
 async def reindex(*, limit: int | None, batch_size: int) -> None:
@@ -55,17 +35,18 @@ async def reindex(*, limit: int | None, batch_size: int) -> None:
 
     rows = await pool.fetch(
         """
-        SELECT c.case_id, c.violation_behavior, c.penalty_content,
-               c.risk_tags, c.case_summary, d.raw_text
+        SELECT c.case_id, c.violation_behavior, c.case_summary
         FROM penalty_cases c
-        JOIN documents d ON c.file_id = d.file_id
         WHERE c.is_insurance_related = TRUE
         ORDER BY c.case_id
         LIMIT $1
         """,
         limit or 10_000,
     )
-    print(f"Reindexing {len(rows)} cases with model={embedder.model_name}")
+    print(
+        f"Reindexing {len(rows)} cases with model={embedder.model_name} "
+        f"(embed=violation_behavior+case_summary)"
+    )
 
     sparse_index = get_sparse_index()
     for i in range(0, len(rows), batch_size):
@@ -98,7 +79,9 @@ async def reindex(*, limit: int | None, batch_size: int) -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    parser = argparse.ArgumentParser(description="Rebuild case embeddings with raw_text")
+    parser = argparse.ArgumentParser(
+        description="Rebuild case embeddings (violation_behavior + case_summary)",
+    )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=8)
     args = parser.parse_args()

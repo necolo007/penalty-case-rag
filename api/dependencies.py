@@ -77,6 +77,7 @@ async def init_app_state() -> None:
         reranker=reranker,
         query_encoder=query_encoder,
         sparse_index=sparse_index,
+        llm_client=llm,
     )
 
     generator = ReviewGenerator(llm) if llm else None

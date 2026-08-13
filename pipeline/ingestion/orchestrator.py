@@ -249,10 +249,13 @@ class IngestOrchestrator:
 
     async def _store_case(self, case_id: str, case: ExtractedCase, *,
                           regulator: str | None, publish_date: str | None) -> None:
-        # 索引文本 = 违法行为 + 处罚内容 + 标签（与检索 query 侧同模型编码）
-        embedding_text = " ".join(filter(None, [
-            case.violation_behavior, case.penalty_content, " ".join(case.risk_tags),
-        ]))
+        # 索引文本 = 违规行为 + 案件总结（与 reindex / 检索文档侧一致）
+        from engine.embedding.case_text import build_case_embed_text
+
+        embedding_text = build_case_embed_text(
+            violation_behavior=case.violation_behavior,
+            case_summary=case.case_summary,
+        )
         embedding = None
         sparse = None
         if case.is_insurance_related and embedding_text.strip():

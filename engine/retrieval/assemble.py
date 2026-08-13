@@ -54,6 +54,7 @@ def assemble_hybrid_retriever(
     redis=None,
     rerank_candidates: int | None = None,
     sparse_index: SparseLexicalIndex | None = None,
+    llm_client=None,
 ) -> AnyRetriever:
     """按 RETRIEVAL_BACKEND 装配；默认 bge_m3。"""
     if query_encoder is None:
@@ -91,7 +92,25 @@ def assemble_hybrid_retriever(
             tag_backfill_top_cases=settings.TAG_BACKFILL_TOP_CASES,
         )
 
-    logger.info("Assembling bge_m3 retriever")
+    listwise = None
+    if settings.RETRIEVAL_LLM_LISTWISE and llm_client is not None:
+        from engine.retrieval.llm_listwise import LlmListwiseReranker
+
+        listwise = LlmListwiseReranker(
+            llm_client,
+            keep_min=settings.RETRIEVAL_LLM_LISTWISE_KEEP_MIN,
+            keep_max=settings.RETRIEVAL_LLM_LISTWISE_KEEP_MAX,
+        )
+        logger.info(
+            "LLM listwise enabled keep_min=%s keep_max=%s",
+            settings.RETRIEVAL_LLM_LISTWISE_KEEP_MIN,
+            settings.RETRIEVAL_LLM_LISTWISE_KEEP_MAX,
+        )
+
+    logger.info(
+        "Assembling bge_m3 retriever fusion_mode=%s",
+        settings.RETRIEVAL_FUSION_MODE,
+    )
     index = sparse_index or get_sparse_index()
     return M3HybridRetriever(
         dense=VectorRetriever(
@@ -113,4 +132,7 @@ def assemble_hybrid_retriever(
         tag_backfill_top_cases=settings.TAG_BACKFILL_TOP_CASES,
         enable_hyde=bool(settings.RETRIEVAL_HYDE_ENABLED),
         hyde_rerank=bool(settings.RETRIEVAL_HYDE_RERANK),
+        enable_dense_raw=bool(settings.RETRIEVAL_DENSE_RAW_ENABLED),
+        fusion_mode=settings.RETRIEVAL_FUSION_MODE,
+        llm_listwise=listwise,
     )

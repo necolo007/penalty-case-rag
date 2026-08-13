@@ -149,6 +149,7 @@ async def main() -> None:
         reranker=NoopReranker(),
         query_encoder=CachedQueryEncoder(embedder, redis, ttl=settings.EMBEDDING_CACHE_TTL),
         sparse_index=sparse_index,
+        llm_client=llm_client,
     )
 
     if is_legacy:

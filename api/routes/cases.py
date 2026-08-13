@@ -184,12 +184,13 @@ async def _ensure_tags_and_embedding(pool, case_id: str, row) -> dict:
             )
             from engine.retrieval.assemble import get_sparse_index
 
-            text = " ".join(filter(None, [
-                row["violation_behavior"] or "",
-                row["penalty_content"] or "",
-                " ".join(risk_tags),
-            ])).strip()
-            if text:
+            from engine.embedding.case_text import build_case_embed_text
+
+            text = build_case_embed_text(
+                violation_behavior=row["violation_behavior"],
+                case_summary=row["case_summary"] if "case_summary" in row.keys() else "",
+            )
+            if text and text != "保险监管处罚案例":
                 embedder = create_embedding_provider(_gs())
                 dense_list, sparse_list = encode_documents_maybe_dual(embedder, [text])
                 sparse = sparse_list[0] if sparse_list is not None else None

@@ -3,7 +3,8 @@
 管线：
   原始 query → LLM/同义词改写（+ 可选 HyDE）→ BGE-M3 encode
              → dense(原文) / dense(改写) / dense(HyDE) / sparse 并行召回
-             → dense 余弦 max 合并 + sparse 补位 → Reranker 精排 → Top-K
+             → 融合（默认 dense 余弦 max；可选加权 RRF）→ Reranker 精排
+             → 可选 LLM 列表重排+减枝 → Top-K
 
 HyDE：用 LLM 生成「假想违法事实」（决定书语体）再 embed，缩小口语↔文书鸿沟。
 """
@@ -22,6 +23,7 @@ from engine.classification.competition_label_map import (
 from engine.embedding.cache import CachedQueryEncoder
 from engine.retrieval.base import RetrievalResponse, SearchQuery, SearchResult
 from engine.retrieval.match_reason import build_match_reason
+from engine.retrieval.merger import reciprocal_rank_fusion
 from engine.retrieval.query_rewriter import QueryRewriter
 from engine.retrieval.reranker import Reranker
 from engine.retrieval.risk_predictor import RiskPredictor
@@ -31,10 +33,10 @@ from engine.retrieval.vector_retriever import VectorRetriever
 logger = logging.getLogger(__name__)
 
 DEFAULT_M3_WEIGHTS = {
-    "dense_raw": 1.6,
-    "dense": 1.5,
-    "dense_hyde": 1.55,
-    "sparse": 0.55,
+    "dense_raw": 0.4,
+    "dense": 0.6,
+    "dense_hyde": 0.35,
+    "sparse": 0.2,
 }
 
 __all__ = ["M3HybridRetriever", "RetrievalResponse"]
@@ -61,6 +63,9 @@ class M3HybridRetriever:
         tag_backfill_top_cases: int = 5,
         enable_hyde: bool = False,
         hyde_rerank: bool = False,
+        enable_dense_raw: bool = True,
+        fusion_mode: str = "max_merge",
+        llm_listwise=None,
     ):
         self.dense = dense
         self.sparse = sparse
@@ -79,63 +84,14 @@ class M3HybridRetriever:
         self.tag_backfill_top_cases = tag_backfill_top_cases
         self.enable_hyde = enable_hyde
         self.hyde_rerank = hyde_rerank
+        self.enable_dense_raw = enable_dense_raw
+        self.fusion_mode = (fusion_mode or "max_merge").strip().lower()
+        self.llm_listwise = llm_listwise
 
-    async def retrieve(self, query: SearchQuery) -> RetrievalResponse:
-        started = time.perf_counter()
-
-        async def _no_hyde() -> str:
-            return ""
-
-        hyde_coro = (
-            self.rewriter.hyde(query.query_text)
-            if self.enable_hyde and hasattr(self.rewriter, "hyde")
-            else _no_hyde()
-        )
-        rewritten_query, predicted_risk_ids, hyde_text = await asyncio.gather(
-            self.rewriter.rewrite(query.query_text),
-            self.risk_predictor.predict(query.query_text),
-            hyde_coro,
-        )
-        predicted_cn_tags = predict_cn_tags_by_keywords(
-            query.query_text, max_tags=self.cn_tag_predict_max,
-        )
-        if predicted_cn_tags:
-            for cid in cn_tags_to_competition_ids(predicted_cn_tags):
-                if cid not in predicted_risk_ids:
-                    predicted_risk_ids.append(cid)
-        predicted_risk_ids = list(dict.fromkeys(predicted_risk_ids))[: self.risk_id_cap]
-
-        raw_dense, _ = await self.query_encoder.encode_query_dual(query.query_text)
-        rw_dense, rw_sparse = await self.query_encoder.encode_query_dual(rewritten_query)
-
-        channel_tasks: dict[str, object] = {
-            "dense_raw": self.dense.retrieve(query, query_embedding=raw_dense),
-            "dense": self.dense.retrieve(query, query_embedding=rw_dense),
-            "sparse": self.sparse.retrieve(query, query_sparse=rw_sparse),
-        }
-        hyde_text = (hyde_text or "").strip()
-        if hyde_text:
-            hyde_dense, _ = await self.query_encoder.encode_query_dual(hyde_text)
-            channel_tasks["dense_hyde"] = self.dense.retrieve(
-                query, query_embedding=hyde_dense,
-            )
-
-        channel_outputs = await asyncio.gather(*channel_tasks.values(), return_exceptions=True)
-
-        channel_results: dict[str, list[SearchResult]] = {}
-        for channel, output in zip(channel_tasks.keys(), channel_outputs):
-            if isinstance(output, BaseException):
-                logger.warning("Channel %s failed: %s", channel, output)
-                channel_results[channel] = []
-            else:
-                results = output
-                if channel in ("dense_raw", "dense_hyde"):
-                    for r in results:
-                        # 统一记入 dense 族，便于前端/诊断展示
-                        r.channels = ["dense"] if channel == "dense_raw" else ["dense_hyde"]
-                channel_results[channel] = results
-
-        # dense 族按余弦分 max 合并，避免 RRF 截断挤出金标
+    def _fuse_max_merge(
+        self, channel_results: dict[str, list[SearchResult]],
+    ) -> list[SearchResult]:
+        """dense 族按余弦分 max 合并，sparse 仅补位。"""
         best_score: dict[str, float] = {}
         best_row: dict[str, SearchResult] = {}
         for ch in ("dense_raw", "dense", "dense_hyde"):
@@ -176,7 +132,112 @@ class M3HybridRetriever:
             fused.append(r)
             seen.add(r.case_id)
             sparse_bonus -= 1
-        fused = fused[: self.fusion_size]
+        return fused[: self.fusion_size]
+
+    def _fuse_weighted_rrf(
+        self, channel_results: dict[str, list[SearchResult]],
+    ) -> list[SearchResult]:
+        """多路加权 RRF（dense_raw / dense / dense_hyde / sparse）。"""
+        # 恢复通道名便于权重查找（dense_raw 结果 channels 可能被标成 dense）
+        named: dict[str, list[SearchResult]] = {}
+        for ch, rows in channel_results.items():
+            if not rows:
+                continue
+            # 复制 channels 标记，避免污染原对象展示
+            copied: list[SearchResult] = []
+            for r in rows:
+                rr = SearchResult(
+                    case_id=r.case_id,
+                    party_name=r.party_name,
+                    violation_behavior=r.violation_behavior,
+                    penalty_content=r.penalty_content,
+                    regulator=r.regulator,
+                    risk_tags=list(r.risk_tags or []),
+                    score=r.score,
+                    penalty_doc_no=r.penalty_doc_no,
+                    risk_type_ids=list(r.risk_type_ids or []),
+                    match_reason=r.match_reason,
+                    source_file=r.source_file,
+                    channels=[ch],
+                    highlight_fields=dict(r.highlight_fields or {}),
+                )
+                copied.append(rr)
+            named[ch] = copied
+
+        return reciprocal_rank_fusion(
+            named,
+            k=self.rrf_k,
+            top_k=self.fusion_size,
+            weights=self.channel_weights,
+            multi_channel_bonus=self.multi_channel_bonus,
+        )
+
+    def fuse_channels(
+        self, channel_results: dict[str, list[SearchResult]],
+    ) -> list[SearchResult]:
+        if self.fusion_mode in ("weighted_rrf", "rrf"):
+            return self._fuse_weighted_rrf(channel_results)
+        return self._fuse_max_merge(channel_results)
+
+    async def retrieve(self, query: SearchQuery) -> RetrievalResponse:
+        started = time.perf_counter()
+
+        async def _no_hyde() -> str:
+            return ""
+
+        hyde_coro = (
+            self.rewriter.hyde(query.query_text)
+            if self.enable_hyde and hasattr(self.rewriter, "hyde")
+            else _no_hyde()
+        )
+        rewritten_query, predicted_risk_ids, hyde_text = await asyncio.gather(
+            self.rewriter.rewrite(query.query_text),
+            self.risk_predictor.predict(query.query_text),
+            hyde_coro,
+        )
+        predicted_cn_tags = predict_cn_tags_by_keywords(
+            query.query_text, max_tags=self.cn_tag_predict_max,
+        )
+        if predicted_cn_tags:
+            for cid in cn_tags_to_competition_ids(predicted_cn_tags):
+                if cid not in predicted_risk_ids:
+                    predicted_risk_ids.append(cid)
+        predicted_risk_ids = list(dict.fromkeys(predicted_risk_ids))[: self.risk_id_cap]
+
+        rw_dense, rw_sparse = await self.query_encoder.encode_query_dual(rewritten_query)
+
+        channel_tasks: dict[str, object] = {
+            "dense": self.dense.retrieve(query, query_embedding=rw_dense),
+            "sparse": self.sparse.retrieve(query, query_sparse=rw_sparse),
+        }
+        if self.enable_dense_raw:
+            raw_dense, _ = await self.query_encoder.encode_query_dual(query.query_text)
+            channel_tasks["dense_raw"] = self.dense.retrieve(
+                query, query_embedding=raw_dense,
+            )
+        hyde_text = (hyde_text or "").strip()
+        if hyde_text:
+            hyde_dense, _ = await self.query_encoder.encode_query_dual(hyde_text)
+            channel_tasks["dense_hyde"] = self.dense.retrieve(
+                query, query_embedding=hyde_dense,
+            )
+
+        channel_outputs = await asyncio.gather(*channel_tasks.values(), return_exceptions=True)
+
+        channel_results: dict[str, list[SearchResult]] = {}
+        for channel, output in zip(channel_tasks.keys(), channel_outputs):
+            if isinstance(output, BaseException):
+                logger.warning("Channel %s failed: %s", channel, output)
+                channel_results[channel] = []
+            else:
+                results = output
+                if channel in ("dense_raw", "dense_hyde"):
+                    for r in results:
+                        # 统一记入 dense 族，便于前端/诊断展示
+                        r.channels = ["dense"] if channel == "dense_raw" else ["dense_hyde"]
+                channel_results[channel] = results
+
+        fused = self.fuse_channels(channel_results)
 
         if query.use_reranker:
             candidates = fused[: self.rerank_candidates]
@@ -189,6 +250,11 @@ class M3HybridRetriever:
             )
         else:
             top = fused[: query.top_k]
+
+        if self.llm_listwise is not None and top:
+            top = await self.llm_listwise.rerank(
+                query.query_text, top, top_k=query.top_k,
+            )
 
         for r in top:
             r.match_reason = build_match_reason(query.query_text, rewritten_query, r)

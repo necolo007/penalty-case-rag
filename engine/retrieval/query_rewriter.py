@@ -1,19 +1,58 @@
 """LLM 查询改写器（强制前置）+ 可选 HyDE。
 
-- rewrite：口语 → 保留关键信息 + 追加法言法语（可关，仅同义词）
+- rewrite：口语 → 规范化行为描述（JSON normalized_violation；可关，仅同义词）
 - hyde：口语 → 假想违法事实（决定书语体，供 dense_hyde 通道）
 
 LLM 不可用时：rewrite 降级同义词；hyde 返回空串（跳过该通道）。
+改写结果供 dense 通道；原文由 dense_raw 单独编码，故不再强制拼接原文。
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 
 from engine.llm.client import DeepSeekClient, ThinkingMode
 from engine.llm.prompts import HYDE_PROMPT, QUERY_REWRITE_PROMPT
 
 logger = logging.getLogger(__name__)
+
+_JSON_BLOCK = re.compile(r"\{[\s\S]*\}")
+
+
+def _parse_normalized_violation(raw: str) -> str:
+    """从模型输出中提取 normalized_violation；失败则退回清洗后的纯文本。"""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            val = data.get("normalized_violation") or data.get("rewritten_query") or ""
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    except json.JSONDecodeError:
+        pass
+    m = _JSON_BLOCK.search(text)
+    if m:
+        try:
+            data = json.loads(m.group(0))
+            if isinstance(data, dict):
+                val = data.get("normalized_violation") or ""
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+        except json.JSONDecodeError:
+            pass
+    # 非 JSON：去掉可能的前缀，压成一行
+    cleaned = " ".join(line.strip() for line in text.splitlines() if line.strip())
+    if cleaned.lower().startswith("输出："):
+        cleaned = cleaned[3:].strip()
+    return cleaned
 
 
 class QueryRewriter:
@@ -33,18 +72,13 @@ class QueryRewriter:
             try:
                 rewritten = self.llm.complete(
                     QUERY_REWRITE_PROMPT.format(query_text=query_text),
-                    max_tokens=180,
+                    max_tokens=220,
                     temperature=0.1,
                     thinking=ThinkingMode.DISABLED,
                 )
-                merged = " ".join(
-                    line.strip() for line in rewritten.split("\n") if line.strip()
-                )
-                if merged:
-                    q = query_text.strip()
-                    if q and q not in merged:
-                        return f"{q} {merged}"
-                    return merged
+                normalized = _parse_normalized_violation(rewritten)
+                if normalized:
+                    return normalized
             except Exception as e:  # noqa: BLE001
                 logger.warning("LLM rewrite failed, fallback to synonym expansion: %s", e)
 
