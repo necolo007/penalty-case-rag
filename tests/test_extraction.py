@@ -272,3 +272,45 @@ def test_llm_party_only_filled_when_empty():
     assert case.party_name == "华泰人寿保险股份有限公司山东分公司"
     # 文号/机关与正则一致时可不标 hybrid；若正则改写了同义写法也可能 hybrid
     assert "给予投保人" in case.violation_behavior
+
+
+def test_institution_type_health_insurance_branch_is_life():
+    """健康险+分公司：业态优先，应判寿险公司而非保险分支机构。"""
+    from pipeline.extraction.schema import ExtractedCase
+
+    engine = ExtractorEngine(llm_client=None, use_llm_refine=False)
+    case = ExtractedCase(
+        file_id="F",
+        source_file="x.pdf",
+        party_name="昆仑健康保险股份有限公司广东分公司",
+        violation_behavior="虚列费用、电销业务销售误导",
+    )
+    engine._infer_institution_type(case)
+    assert case.institution_type == InstitutionType.LIFE_INSURANCE
+
+
+def test_institution_type_life_branch_still_life():
+    from pipeline.extraction.schema import ExtractedCase
+
+    engine = ExtractorEngine(llm_client=None, use_llm_refine=False)
+    case = ExtractedCase(
+        file_id="F",
+        source_file="x.pdf",
+        party_name="华泰人寿保险股份有限公司山东分公司",
+    )
+    engine._infer_institution_type(case)
+    assert case.institution_type == InstitutionType.LIFE_INSURANCE
+
+
+def test_institution_type_generic_branch_fallback():
+    """无业态关键词、仅有分公司时才落保险分支机构。"""
+    from pipeline.extraction.schema import ExtractedCase
+
+    engine = ExtractorEngine(llm_client=None, use_llm_refine=False)
+    case = ExtractedCase(
+        file_id="F",
+        source_file="x.pdf",
+        party_name="某某保险股份有限公司广东分公司",
+    )
+    engine._infer_institution_type(case)
+    assert case.institution_type == InstitutionType.INSURANCE_BRANCH
