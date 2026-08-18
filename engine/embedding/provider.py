@@ -1,10 +1,9 @@
 """Embedding Provider 统一抽象。
 
-设计要点（对齐技术设计文档 §2.6）：
+设计要点：
 - 入库与检索必须使用同一模型（同一向量空间），case_embeddings.embedding_model 标记
-- 云端 Qwen text-embedding-v4 为主（批量 ≤10，40ms/条），本地 BGE 兜底
-- 查询侧加 instruct 非对称编码（实测相似度 0.39 → 0.56）
-- 云端失败按 EMBEDDING_FALLBACK 降级本地并告警（切换模型须全量 reindex）
+- 任务3默认：本地 FlagEmbedding BGE-M3（Hub id + HF_ENDPOINT 镜像）
+- cloud / local(BGE-large) 仅作 legacy 回滚；切换模型须全量 reindex
 """
 
 import logging

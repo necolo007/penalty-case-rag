@@ -11,7 +11,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from pipeline.extraction.extractor import ExtractorEngine
-from pipeline.extraction.schema import ExtractedCase, FieldConfidence, InstitutionType
+from pipeline.extraction.schema import ExtractedCase, FieldConfidence, coerce_institution_type
 
 
 def _load(path: Path) -> list[dict]:
@@ -23,11 +23,7 @@ def _load(path: Path) -> list[dict]:
 
 
 def _to_case(row: dict, *, default_method: str) -> ExtractedCase:
-    inst_raw = row.get("institution_type") or "非保险"
-    try:
-        inst = InstitutionType(inst_raw)
-    except ValueError:
-        inst = InstitutionType.NON_INSURANCE
+    inst = coerce_institution_type(row.get("institution_type") or "非保险")
     case = ExtractedCase(
         file_id=row["file_id"],
         source_file=f"{row['file_id']}.txt",

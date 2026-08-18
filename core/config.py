@@ -1,8 +1,28 @@
 """全局配置：全部从环境变量 / .env 读取，API Key 禁止写入代码仓库。"""
 
+from __future__ import annotations
+
+import logging
+import os
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+# 国内常用 HF 镜像；加载 BGE/Reranker 前必须写入环境变量
+DEFAULT_HF_ENDPOINT = "https://hf-mirror.com"
+
+
+def apply_huggingface_mirror(endpoint: str | None = None) -> str:
+    """把 HF_ENDPOINT 写入进程环境，供 huggingface_hub / transformers 使用。
+
+    仍使用 Hub id（如 BAAI/bge-m3）拉取权重，但流量走镜像站而非 huggingface.co。
+    """
+    value = (endpoint or os.environ.get("HF_ENDPOINT") or DEFAULT_HF_ENDPOINT).strip()
+    if value:
+        os.environ["HF_ENDPOINT"] = value
+    return value
 
 
 class Settings(BaseSettings):
@@ -22,12 +42,15 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.1
     LLM_MAX_RETRIES: int = 3
 
+    # ---- Hugging Face 镜像（BGE-M3 / Reranker 等 Hub 拉取） ----
+    HF_ENDPOINT: str = DEFAULT_HF_ENDPOINT
+
     # ---- Embedding ----
-    # local_bge_m3=任务3默认（FlagEmbedding BGE-M3）；cloud / local 供 legacy 回滚
+    # local_bge_m3=任务3默认（FlagEmbedding BGE-M3）；cloud / local 仅供 legacy 回滚
     EMBEDDING_PROVIDER: str = "local_bge_m3"  # local_bge_m3 | cloud | local
     EMBEDDING_API_KEY: str = ""
-    EMBEDDING_BASE_URL: str = "https://tokendance.space/gateway/v1"
-    EMBEDDING_MODEL: str = "qwen-text-embedding-v4"
+    EMBEDDING_BASE_URL: str = ""
+    EMBEDDING_MODEL: str = ""
     EMBEDDING_DIMENSIONS: int = 1024
     EMBEDDING_INSTRUCT: str = (
         "Given an insurance marketing claim, retrieve similar regulatory penalty cases"
@@ -37,7 +60,7 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL_LOCAL: str = "BAAI/bge-large-zh-v1.5"
     EMBEDDING_DEVICE: str = "cpu"
 
-    # ---- BGE-M3（FlagEmbedding） ----
+    # ---- BGE-M3（FlagEmbedding；Hub id，经 HF_ENDPOINT 镜像拉取） ----
     BGE_M3_MODEL: str = "BAAI/bge-m3"
     BGE_M3_DEVICE: str = "cpu"  # cuda | cpu
     BGE_M3_BATCH_SIZE: int = 8
@@ -143,4 +166,11 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    endpoint = apply_huggingface_mirror(settings.HF_ENDPOINT)
+    logger.debug("HF_ENDPOINT=%s", endpoint)
+    return settings
+
+
+# 导入即应用镜像，避免脚本/API 在 get_settings 前加载模型
+apply_huggingface_mirror()

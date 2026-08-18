@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.dependencies import init_app_state
 from api.routes import cases, documents, meta, review, search
+from core.config import get_settings
 from core.db import close_pool
 from core.redis_client import close_redis
 
@@ -25,6 +26,13 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings = get_settings()
+    logging.getLogger(__name__).info(
+        "HF_ENDPOINT=%s BGE_M3_MODEL=%s RERANKER_MODEL=%s",
+        settings.HF_ENDPOINT,
+        settings.BGE_M3_MODEL,
+        settings.RERANKER_MODEL,
+    )
     await init_app_state()
     yield
     await close_pool()

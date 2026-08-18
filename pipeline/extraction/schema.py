@@ -6,13 +6,37 @@ from typing import Optional
 
 
 class InstitutionType(str, Enum):
+    """与 docs/change/n8-4/prompt.md 选项对齐（代理/经纪分开，无「分支机构」档）。"""
+
     LIFE_INSURANCE = "寿险公司"
     PROPERTY_INSURANCE = "财险公司"
-    INSURANCE_BRANCH = "保险分支机构"
-    INSURANCE_AGENCY = "保险代理/中介"
-    INSURANCE_AGENT = "保险代理人"
-    OTHER_FINANCIAL = "其他金融机构"
+    INSURANCE_AGENCY = "保险代理"
+    INSURANCE_BROKER = "保险经纪"
+    INSURANCE_COMPANY = "保险公司"
+    OTHER = "其他"
     NON_INSURANCE = "非保险"
+    UNKNOWN = "无法判断"
+
+
+# 历史落库/金标别名 → 现行枚举值
+_INSTITUTION_TYPE_ALIASES = {
+    "保险代理/中介": "保险代理",
+    "保险分支机构": "保险公司",
+    "保险代理人": "其他",
+    "其他金融机构": "其他",
+}
+
+
+def coerce_institution_type(raw: str | None) -> InstitutionType:
+    """把 LLM/金标/旧库字符串规范到 InstitutionType。"""
+    s = (raw or "").strip()
+    if not s or s.lower() == "null":
+        return InstitutionType.NON_INSURANCE
+    s = _INSTITUTION_TYPE_ALIASES.get(s, s)
+    try:
+        return InstitutionType(s)
+    except ValueError:
+        return InstitutionType.NON_INSURANCE
 
 
 class FieldConfidence(str, Enum):

@@ -24,7 +24,12 @@ from pipeline.extraction.regex_patterns import (
     INSTITUTION_TYPE_RULES,
     PATTERNS,
 )
-from pipeline.extraction.schema import ExtractedCase, FieldConfidence, InstitutionType
+from pipeline.extraction.schema import (
+    ExtractedCase,
+    FieldConfidence,
+    InstitutionType,
+    coerce_institution_type,
+)
 from pipeline.parser.base import ParseResult
 from pipeline.parser.ocr_normalize import normalize_ocr_text
 
@@ -40,16 +45,20 @@ DEFAULT_EXTRACTION_LLM_MAX_CHARS = 8000
 _BARE_REGULATOR_NAMES = {"国家金融监督管理总局", "中国银保监会", "中国保监会"}
 
 _LLM_INSTITUTION_MAP: dict[str, InstitutionType | None] = {
+    # n8-4 选项；值为 None 表示不锁定，交给规则从当事人细判
     "寿险公司": InstitutionType.LIFE_INSURANCE,
     "财险公司": InstitutionType.PROPERTY_INSURANCE,
     "保险代理": InstitutionType.INSURANCE_AGENCY,
-    "保险经纪": InstitutionType.INSURANCE_AGENCY,
-    "保险代理/中介": InstitutionType.INSURANCE_AGENCY,
-    "保险公司": None,  # 过粗，交给规则从当事人名称细判
-    "其他": InstitutionType.OTHER_FINANCIAL,
-    "其他金融机构": InstitutionType.OTHER_FINANCIAL,
+    "保险经纪": InstitutionType.INSURANCE_BROKER,
+    "保险公司": None,
+    "其他": InstitutionType.OTHER,
     "非保险": InstitutionType.NON_INSURANCE,
     "无法判断": None,
+    # 历史别名
+    "保险代理/中介": None,
+    "保险分支机构": None,
+    "其他金融机构": InstitutionType.OTHER,
+    "保险代理人": InstitutionType.OTHER,
 }
 
 # LLM 主抽后：长字段保留 LLM；短字段按策略用正则加固精确匹配。
@@ -65,13 +74,25 @@ def _matched_text(m: "re.Match") -> str:
     return m.group(0)
 
 
-def _parse_json_object(raw: str) -> dict[str, Any]:
-    """解析模型 JSON；容忍偶发 Markdown 代码围栏。"""
+def _parse_json_payload(raw: str) -> Any:
+    """解析模型 JSON；容忍偶发 Markdown 代码围栏。可为对象或数组。"""
     text = (raw or "").strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
     return json.loads(text)
+
+
+def _coerce_extraction_items(data: Any) -> list[dict[str, Any]]:
+    """将 LLM 抽取结果规范为案例对象列表（兼容旧版单对象 / cases 包装）。"""
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if not isinstance(data, dict):
+        return []
+    wrapped = data.get("cases")
+    if isinstance(wrapped, list):
+        return [x for x in wrapped if isinstance(x, dict)]
+    return [data]
 
 
 class ExtractorEngine:
@@ -129,17 +150,17 @@ class ExtractorEngine:
             if text != parse_result.markdown:
                 parse_result.markdown = text
             # 路径②：长文本 → 按文号切分多案例后分别抽取
+            # （LLM 主抽时，同一片段内多个公司主体也会拆成多条）
             segments = self._split_case_segments(parse_result.markdown)
             cases = []
             for seg in segments:
-                case = self._from_text(seg, file_id=file_id, source_file=source_file)
-                if case:
-                    cases.append(case)
+                cases.extend(
+                    self._from_text(seg, file_id=file_id, source_file=source_file)
+                )
             if not cases:
-                case = self._from_text(
+                cases = self._from_text(
                     parse_result.markdown, file_id=file_id, source_file=source_file,
                 )
-                cases = [case] if case else []
 
         for case in cases:
             self._finalize_institution_type(case)
@@ -161,17 +182,18 @@ class ExtractorEngine:
             return
         self._infer_institution_type(case)
 
-    def _from_text(self, text: str, *, file_id: str, source_file: str) -> ExtractedCase | None:
+    def _from_text(self, text: str, *, file_id: str, source_file: str) -> list[ExtractedCase]:
         """长文抽取入口：按 EXTRACTION_MODE 选择 LLM 主抽或正则主抽。"""
         if not text.strip():
-            return None
+            return []
         prefer_llm = self.extraction_mode == "llm_first" and self.llm is not None
         if prefer_llm:
-            case = self._from_text_llm(text, file_id=file_id, source_file=source_file)
-            if case is not None:
-                return case
+            cases = self._from_text_llm(text, file_id=file_id, source_file=source_file)
+            if cases:
+                return cases
             logger.warning("LLM extraction failed for %s, fallback to regex", file_id)
-        return self._from_text_regex(text, file_id=file_id, source_file=source_file)
+        regex_case = self._from_text_regex(text, file_id=file_id, source_file=source_file)
+        return [regex_case] if regex_case is not None else []
 
     # ---------- 路径①：公示表 ----------
 
@@ -282,7 +304,7 @@ class ExtractorEngine:
 
     # ---------- 路径②a：LLM 主抽 ----------
 
-    def _from_text_llm(self, text: str, *, file_id: str, source_file: str) -> ExtractedCase | None:
+    def _from_text_llm(self, text: str, *, file_id: str, source_file: str) -> list[ExtractedCase]:
         case_text = text.strip()
         if len(case_text) > self.extraction_llm_max_chars:
             case_text = case_text[: self.extraction_llm_max_chars]
@@ -290,38 +312,59 @@ class ExtractorEngine:
             resp = self.llm.complete(
                 EXTRACTION_USER_PROMPT.format(case_text=case_text),
                 system=EXTRACTION_SYSTEM_PROMPT,
-                max_tokens=1600,
+                max_tokens=3200,
                 temperature=0.1,
                 json_mode=True,
                 thinking=ThinkingMode.DISABLED,
             )
-            data = _parse_json_object(resp)
-            if not isinstance(data, dict):
-                return None
+            data = _parse_json_payload(resp)
+            items = _coerce_extraction_items(data)
+            if not items:
+                return []
         except Exception as e:  # noqa: BLE001
             logger.warning("LLM extraction call failed for %s: %s", file_id, e)
-            return None
+            return []
 
-        case = ExtractedCase(
-            file_id=file_id,
-            source_file=source_file,
-            extraction_method="llm",
-            raw_text_snippet=self._build_evidence_snippet(text),
-        )
-        self._apply_llm_fields(case, data)
-        # 轻量补齐：日期/金额/依据不在主 Prompt 内，用正则从原文摘
-        self._supplement_aux_fields(case, text)
-        self._sanitize_fields(case)
+        # 兼容偶发把多家公司塞进 party_name 数组的写法
+        expanded: list[dict[str, Any]] = []
+        for item in items:
+            pn = item.get("party_name")
+            if isinstance(pn, list):
+                names = [str(x).strip() for x in pn if str(x).strip() and str(x).lower() != "null"]
+                if len(names) >= 2:
+                    for name in names:
+                        clone = dict(item)
+                        clone["party_name"] = name
+                        expanded.append(clone)
+                    continue
+                if len(names) == 1:
+                    item = dict(item)
+                    item["party_name"] = names[0]
+            expanded.append(item)
 
-        # 短字段混合：跑一遍正则，回填空/低置信，并保住文号/机关精确匹配
+        snippet = self._build_evidence_snippet(text)
         regex_case = self._from_text_regex(text, file_id=file_id, source_file=source_file)
-        if regex_case is not None:
-            self._merge_regex_short_fields(case, regex_case)
+        cases: list[ExtractedCase] = []
+        for data in expanded:
+            case = ExtractedCase(
+                file_id=file_id,
+                source_file=source_file,
+                extraction_method="llm",
+                raw_text_snippet=snippet,
+            )
+            self._apply_llm_fields(case, data)
+            # 轻量补齐：日期/金额/依据不在主 Prompt 内，用正则从原文摘
+            self._supplement_aux_fields(case, text)
+            self._sanitize_fields(case)
 
-        # 至少一个核心字段才算成功，否则交给正则兜底
-        if not any(getattr(case, f) for f in CORE_FIELDS):
-            return None
-        return case
+            # 短字段混合：跑一遍正则，回填空/低置信，并保住文号/机关精确匹配
+            if regex_case is not None:
+                self._merge_regex_short_fields(case, regex_case)
+
+            # 至少一个核心字段才算成功，否则交给正则兜底
+            if any(getattr(case, f) for f in CORE_FIELDS):
+                cases.append(case)
+        return cases
 
     def _merge_regex_short_fields(
         self, llm_case: ExtractedCase, regex_case: ExtractedCase,
@@ -706,7 +749,9 @@ class ExtractorEngine:
                 json_mode=True,
                 thinking=ThinkingMode.DISABLED,
             )
-            data = _parse_json_object(resp)
+            data = _parse_json_payload(resp)
+            if not isinstance(data, dict):
+                return
         except Exception as e:  # noqa: BLE001
             logger.warning("LLM refine failed for %s: %s", case.file_id, e)
             return
@@ -762,16 +807,18 @@ class ExtractorEngine:
         case.overall_confidence = round(min(max(score / total_w + method_adj, 0.05), 0.98), 3)
 
     def _infer_institution_type(self, case: ExtractedCase) -> None:
+        """按公司业态推断机构类型；个人当事人也从其所属/关联公司判断，不因是个人就标「其他」。"""
         name = case.party_name or ""
-        blob = f"{name} {case.violation_behavior or ''}"
-        entity = normalize_entity(name)
-        if entity.entity_type == "责任人员":
-            case.institution_type = InstitutionType.INSURANCE_AGENT
-            return
+        blob = f"{name} {case.violation_behavior or ''} {case.case_summary or ''} {case.raw_text_snippet or ''}"
         for pattern, type_name in INSTITUTION_TYPE_RULES:
             if re.search(pattern, blob):
-                case.institution_type = InstitutionType(type_name)
+                case.institution_type = coerce_institution_type(type_name)
                 return
+        entity = normalize_entity(name)
+        if entity.entity_type == "责任人员":
+            # 个人且正文无法推断所属公司业态 → 无法判断（而非「其他」）
+            case.institution_type = InstitutionType.UNKNOWN
+            return
         case.institution_type = InstitutionType.NON_INSURANCE
 
     @staticmethod

@@ -1,7 +1,7 @@
 import json
 
 from pipeline.extraction.extractor import ExtractorEngine
-from pipeline.extraction.schema import InstitutionType
+from pipeline.extraction.schema import InstitutionType, coerce_institution_type
 from pipeline.parser.base import ParseResult
 
 SAMPLE_DECISION_TEXT = """行政处罚决定书
@@ -303,7 +303,7 @@ def test_institution_type_life_branch_still_life():
 
 
 def test_institution_type_generic_branch_fallback():
-    """无业态关键词、仅有分公司时才落保险分支机构。"""
+    """无细业态、仅有保险机构+分公司时落「保险公司」（对齐 prompt，无分支机构档）。"""
     from pipeline.extraction.schema import ExtractedCase
 
     engine = ExtractorEngine(llm_client=None, use_llm_refine=False)
@@ -313,4 +313,39 @@ def test_institution_type_generic_branch_fallback():
         party_name="某某保险股份有限公司广东分公司",
     )
     engine._infer_institution_type(case)
-    assert case.institution_type == InstitutionType.INSURANCE_BRANCH
+    assert case.institution_type == InstitutionType.INSURANCE_COMPANY
+
+
+def test_institution_type_agri_insurance_branch_is_property():
+    """农业保险+支公司：业态优先，应判财险公司而非保险代理。"""
+    from pipeline.extraction.schema import ExtractedCase
+
+    engine = ExtractorEngine(llm_client=None, use_llm_refine=False)
+    case = ExtractedCase(
+        file_id="F",
+        source_file="x.pdf",
+        party_name="某某农业保险股份有限公司某某支公司",
+    )
+    engine._infer_institution_type(case)
+    assert case.institution_type == InstitutionType.PROPERTY_INSURANCE
+
+
+def test_institution_type_broker_not_agency():
+    """保险经纪与保险代理分开。"""
+    from pipeline.extraction.schema import ExtractedCase
+
+    engine = ExtractorEngine(llm_client=None, use_llm_refine=False)
+    case = ExtractedCase(
+        file_id="F",
+        source_file="x.pdf",
+        party_name="北京联合保险经纪有限公司广东分公司",
+    )
+    engine._infer_institution_type(case)
+    assert case.institution_type == InstitutionType.INSURANCE_BROKER
+
+
+def test_coerce_institution_type_aliases():
+    assert coerce_institution_type("保险分支机构") == InstitutionType.INSURANCE_COMPANY
+    assert coerce_institution_type("保险代理/中介") == InstitutionType.INSURANCE_AGENCY
+    assert coerce_institution_type("其他金融机构") == InstitutionType.OTHER
+    assert coerce_institution_type("保险经纪") == InstitutionType.INSURANCE_BROKER
