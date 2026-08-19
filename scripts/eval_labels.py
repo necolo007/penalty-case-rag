@@ -4,14 +4,21 @@
 「标签准确率、宏平均 F1、人工抽查」。
 
 用法：
-  # 仅标签（原行为）
-  python scripts/eval_labels.py --gold data/eval/gold_extraction_305_cleaned.jsonl
+  # 仅标签
+  python scripts/eval_labels.py --gold data/eval/gold_task2_521_cleaned.jsonl
 
   # 标签 + 摘要 BERTScore + 关键词（需抽取结果含 case_summary）
   python scripts/eval_labels.py \\
-    --gold data/eval/gold_extraction_305_cleaned.jsonl \\
-    --extracted data/eval/extracted_cases_hybrid_305.jsonl \\
-    --output data/eval/label_eval_task2_305.json
+    --gold data/eval/gold_task2_521_cleaned.jsonl \\
+    --extracted data/eval/extracted_cases_hybrid_521.jsonl \\
+    --output data/eval/label_eval_task2_521_cleaned.json
+
+  # LLM 打标 + 导出逐案预测
+  python scripts/eval_labels.py \\
+    --gold data/eval/gold_task2_521_cleaned.jsonl \\
+    --with-llm \\
+    --predictions-out data/eval/predicted_risk_tags_521_llm.jsonl \\
+    --output data/eval/label_eval_task2_521_llm.json
 """
 
 from __future__ import annotations
@@ -20,6 +27,7 @@ import argparse
 import asyncio
 import itertools
 import json
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -34,9 +42,14 @@ from engine.classification.competition_label_map import (
     CANONICAL_CN_TAGS,
     _merged_keyword_map,
     cn_tags_to_competition_ids,
+    format_cn_tag_guide_for_prompt,
     normalize_cn_tags,
+    predict_cn_tags_by_keywords,
+    refine_cn_tags,
 )
 from engine.classification.risk_tagger import RiskTagger
+from engine.llm.client import ThinkingMode
+from engine.llm.prompts import RISK_CN_SYSTEM_PROMPT, RISK_CN_USER_PROMPT
 
 DEFAULT_BERT_MODEL = "bert-base-chinese"
 
@@ -47,6 +60,46 @@ def _load_jsonl(path: Path) -> list[dict]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def _parse_json_obj(raw: str) -> dict:
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return json.loads(text)
+
+
+def _postprocess_cn_tags(tags: list[str], violation_behavior: str) -> list[str]:
+    """轻量对齐字典口径：具体形式补上位；电销场景去掉虚假宣传。"""
+    return refine_cn_tags(tags, violation_behavior)
+
+
+def _llm_predict_cn_tags(llm: Any, violation_behavior: str) -> list[str]:
+    """用中文 27 类提示词直接预测 risk_tags。"""
+    text = (violation_behavior or "").strip()
+    if not text:
+        return ["其他"]
+    resp = llm.complete(
+        RISK_CN_USER_PROMPT.format(
+            tag_list="、".join(CANONICAL_CN_TAGS),
+            tag_guide=format_cn_tag_guide_for_prompt(max_chars=2800),
+            violation_behavior=text[:3500],
+        ),
+        system=RISK_CN_SYSTEM_PROMPT,
+        max_tokens=400,
+        temperature=0.1,
+        json_mode=True,
+        thinking=ThinkingMode.DISABLED,
+    )
+    data = _parse_json_obj(resp)
+    tags = data.get("risk_tags") or []
+    if not isinstance(tags, list):
+        tags = []
+    return _postprocess_cn_tags(
+        normalize_cn_tags([str(t) for t in tags]),
+        text,
+    )
 
 
 def _prf(tp: int, fp: int, fn: int) -> tuple[float, float, float]:
@@ -285,6 +338,16 @@ async def main() -> None:
     parser.add_argument("--bert-model", default=DEFAULT_BERT_MODEL)
     parser.add_argument("--bert-device", default=None)
     parser.add_argument("--bert-batch-size", type=int, default=32)
+    parser.add_argument(
+        "--with-llm",
+        action="store_true",
+        help="用中文风险标签 LLM 提示词预测 risk_tags（默认仅规则/词典）",
+    )
+    parser.add_argument(
+        "--predictions-out",
+        default=None,
+        help="逐案预测结果 jsonl 路径（含 pred/gold risk_tags）",
+    )
     args = parser.parse_args()
 
     gold_path = Path(args.gold)
@@ -294,9 +357,35 @@ async def main() -> None:
     if args.limit:
         rows = rows[: args.limit]
 
-    pool = await create_pool()
-    tagger = RiskTagger(pool, llm_client=None)
+    llm = None
+    if args.with_llm:
+        from core.config import get_settings
+        from engine.llm.client import create_llm_client
+
+        settings = get_settings()
+        if not (settings.LLM_API_KEY or "").strip():
+            raise SystemExit("--with-llm 需要配置 LLM_API_KEY")
+        llm = create_llm_client(settings)
+
+    pool = None
+    tagger = None
+    try:
+        pool = await create_pool()
+        tagger = RiskTagger(pool, llm_client=llm)
+    except Exception as exc:  # noqa: BLE001
+        if llm is None:
+            raise
+        print(f"warn: database unavailable ({exc}); --with-llm continues without rule fallback")
     kw_map = _merged_keyword_map()
+
+    pred_out_path: Path | None = None
+    pred_fh = None
+    if args.predictions_out:
+        pred_out_path = Path(args.predictions_out)
+        if not pred_out_path.is_absolute():
+            pred_out_path = _ROOT / pred_out_path
+        pred_out_path.parent.mkdir(parents=True, exist_ok=True)
+        pred_fh = pred_out_path.open("w", encoding="utf-8")
 
     exact = partial = 0
     jaccards: list[float] = []
@@ -307,48 +396,108 @@ async def main() -> None:
 
     kw_tp = kw_fp = kw_fn = 0
     kw_cases_with_gold = 0
+    llm_fail = 0
 
-    for item in rows:
-        text = item.get("violation_behavior") or ""
-        gold_tags = normalize_cn_tags(item.get("risk_tags") or [])
-        gold_set = set(gold_tags)
+    total = len(rows)
+    try:
+        for i, item in enumerate(rows, 1):
+            text = item.get("violation_behavior") or ""
+            gold_tags = normalize_cn_tags(item.get("risk_tags") or [])
+            gold_set = set(gold_tags)
+            method = "rule_cn_dict"
 
-        tags = await tagger.classify(text)
-        pred_tags = normalize_cn_tags(list(tags.get("display_tags") or []))
-        pred_set = set(pred_tags)
-
-        if pred_set == gold_set:
-            exact += 1
-        if pred_set & gold_set:
-            partial += 1
-        union = pred_set | gold_set
-        jaccards.append(len(pred_set & gold_set) / len(union) if union else 1.0)
-
-        for t in pred_set:
-            if t in gold_set:
-                tag_tp[t] += 1
+            if llm is not None:
+                try:
+                    pred_tags = _llm_predict_cn_tags(llm, text)
+                    method = "llm_cn"
+                except Exception:  # noqa: BLE001
+                    llm_fail += 1
+                    if tagger is not None:
+                        tags = await tagger.classify(text)
+                        pred_tags = refine_cn_tags(
+                            list(tags.get("display_tags") or []), text
+                        )
+                        method = "rule_fallback"
+                    else:
+                        pred_tags = refine_cn_tags(
+                            predict_cn_tags_by_keywords(text, max_tags=8), text
+                        )
+                        method = "keyword_fallback"
+                pred_cids = set(cn_tags_to_competition_ids(pred_tags))
             else:
-                tag_fp[t] += 1
-        for t in gold_set:
-            if t not in pred_set:
-                tag_fn[t] += 1
+                if tagger is None:
+                    raise SystemExit("规则打标需要数据库；请先启动 Postgres 或改用 --with-llm")
+                tags = await tagger.classify(text)
+                pred_tags = normalize_cn_tags(list(tags.get("display_tags") or []))
+                pred_cids = set(tags.get("competition_ids") or []) | set(
+                    cn_tags_to_competition_ids(pred_tags)
+                )
+                method = str(tags.get("method") or "rule_cn_dict")
+            pred_set = set(pred_tags)
 
-        gold_cids = set(cn_tags_to_competition_ids(gold_tags))
-        pred_cids = set(tags.get("competition_ids") or []) | set(
-            cn_tags_to_competition_ids(pred_tags)
-        )
-        cid_tp += len(pred_cids & gold_cids)
-        cid_fp += len(pred_cids - gold_cids)
-        cid_fn += len(gold_cids - pred_cids)
+            if pred_fh is not None:
+                pred_fh.write(
+                    json.dumps(
+                        {
+                            "case_id": item.get("case_id"),
+                            "file_id": item.get("file_id"),
+                            "party_name": item.get("party_name"),
+                            "violation_behavior": text,
+                            "gold_risk_tags": gold_tags,
+                            "pred_risk_tags": pred_tags,
+                            "gold_competition_ids": sorted(cn_tags_to_competition_ids(gold_tags)),
+                            "pred_competition_ids": sorted(pred_cids),
+                            "exact_match": pred_set == gold_set,
+                            "jaccard": (
+                                len(pred_set & gold_set) / len(pred_set | gold_set)
+                                if (pred_set | gold_set)
+                                else 1.0
+                            ),
+                            "method": method,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
 
-        # 关键词：标签词典中命中原文的词集合 P/R/F1
-        gold_kws = _keywords_in_text(text, gold_tags, kw_map)
-        pred_kws = _keywords_in_text(text, pred_tags, kw_map)
-        if gold_kws or pred_kws:
-            kw_cases_with_gold += 1
-        kw_tp += len(pred_kws & gold_kws)
-        kw_fp += len(pred_kws - gold_kws)
-        kw_fn += len(gold_kws - pred_kws)
+            if pred_set == gold_set:
+                exact += 1
+            if pred_set & gold_set:
+                partial += 1
+            union = pred_set | gold_set
+            jaccards.append(len(pred_set & gold_set) / len(union) if union else 1.0)
+
+            for t in pred_set:
+                if t in gold_set:
+                    tag_tp[t] += 1
+                else:
+                    tag_fp[t] += 1
+            for t in gold_set:
+                if t not in pred_set:
+                    tag_fn[t] += 1
+
+            gold_cids = set(cn_tags_to_competition_ids(gold_tags))
+            cid_tp += len(pred_cids & gold_cids)
+            cid_fp += len(pred_cids - gold_cids)
+            cid_fn += len(gold_cids - pred_cids)
+
+            # 关键词：标签词典中命中原文的词集合 P/R/F1
+            gold_kws = _keywords_in_text(text, gold_tags, kw_map)
+            pred_kws = _keywords_in_text(text, pred_tags, kw_map)
+            if gold_kws or pred_kws:
+                kw_cases_with_gold += 1
+            kw_tp += len(pred_kws & gold_kws)
+            kw_fp += len(pred_kws - gold_kws)
+            kw_fn += len(gold_kws - pred_kws)
+
+            if i % 20 == 0 or i == total:
+                print(
+                    f"  progress {i}/{total} exact={exact / i:.3f} llm_fail={llm_fail}",
+                    flush=True,
+                )
+    finally:
+        if pred_fh is not None:
+            pred_fh.close()
 
     n = len(rows) or 1
     per_tag = {}
@@ -374,6 +523,8 @@ async def main() -> None:
 
     report: dict[str, Any] = {
         "evaluated": len(rows),
+        "tagging_mode": "llm_cn" if args.with_llm else "rule_cn_dict",
+        "llm_fail": llm_fail if args.with_llm else 0,
         "risk_tags": {
             "label_accuracy": round(exact / n, 4),
             "label_exact_match_accuracy": round(exact / n, 4),
@@ -410,6 +561,8 @@ async def main() -> None:
         "competition_id_recall": round(cr, 4),
         "note": "任务2：风险标签 + 关键词 +（可选）案例摘要 BERTScore",
     }
+    if pred_out_path is not None:
+        report["predictions_out"] = str(pred_out_path)
 
     if args.extracted:
         ext_path = Path(args.extracted)
@@ -442,6 +595,7 @@ async def main() -> None:
 
     summary = {
         "evaluated": report["evaluated"],
+        "tagging_mode": report.get("tagging_mode"),
         "label_accuracy": report["risk_tags"]["label_accuracy"],
         "macro_f1": report["macro_f1"],
         "competition_id_macro_f1": report["competition_id_macro_f1"],
@@ -454,7 +608,10 @@ async def main() -> None:
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     print(f"Report → {out}")
-    await close_pool()
+    if pred_out_path is not None:
+        print(f"Predictions → {pred_out_path}")
+    if pool is not None:
+        await close_pool()
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from engine.classification.competition_label_map import (
     cn_tags_to_competition_ids,
     normalize_cn_tags,
     predict_cn_tags_by_keywords,
+    refine_cn_tags,
 )
 from engine.classification.tag_mapper import map_internal_to_competition
 from engine.llm.client import DeepSeekClient, ThinkingMode
@@ -75,7 +76,9 @@ class RiskTagger:
             else:
                 display_tags = rule_tags
 
-        display_tags = normalize_cn_tags(display_tags)[: settings.CN_TAG_PREDICT_MAX]
+        display_tags = refine_cn_tags(display_tags, violation_behavior)[
+            : settings.CN_TAG_PREDICT_MAX
+        ]
         internal_ids = list(dict.fromkeys(internal_ids))[:5]
         # R00x：以内部三级映射为主；中文关键词仅在标签很少时补充，降低假阳性
         competition_ids = list(dict.fromkeys(
