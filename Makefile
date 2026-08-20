@@ -53,21 +53,22 @@ reindex-embed:
 sync-dict:
 	python scripts/sync_dictionaries.py
 
-# 离线评测：字段抽取 + 标签 + 检索（无精排，便宜）
+# 离线便宜评测（不对齐生产最优）：任务1 regex、任务2 无 LLM、检索无 rewrite/listwise
 # 用法：make eval-cheap LIMIT=50
 eval-cheap:
-	python scripts/run_eval.py --extract-limit $(LIMIT) --label-limit $(LIMIT) --retrieval-limit $(LIMIT)
+	python scripts/run_eval.py --cheap --extract-limit $(LIMIT) --label-limit $(LIMIT) --retrieval-limit $(LIMIT)
 
+# 默认对齐生产：hybrid+LLM 打标 + 检索 rewrite/rerank/listwise
 eval:
-	python scripts/run_eval.py --retrieval-limit 50
+	python scripts/run_eval.py --retrieval-limit 30
 
 eval-rerank:
-	python scripts/eval_retrieval_local.py --split test --limit 30 --rerank --backend bge_m3
+	python scripts/eval_retrieval_local.py --split test --limit 30 --rerank --backend bge_m3 --llm-rewrite --llm-listwise
 
 eval-ab:
 	python scripts/compare_retrieval_backends.py --split test --limit 30 --rerank
 
-eval-all: eval-cheap eval-rerank
+eval-all: eval eval-rerank
 
 docker-up:
 	docker compose up -d postgres redis api worker

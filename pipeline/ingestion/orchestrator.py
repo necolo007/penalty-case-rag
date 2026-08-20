@@ -159,7 +159,8 @@ class IngestOrchestrator:
                 case.internal_tag_ids = tags["internal_ids"]
                 case.risk_type_ids = tags["competition_ids"]
                 case.risk_tags = tags["display_tags"]
-                if self.generate_summary:
+                # 与任务二摘要评测对齐：优先保留抽取得到的 case_summary，仅空时再生成
+                if self.generate_summary and not (case.case_summary or "").strip():
                     case.case_summary = self._summarize(case)
 
             case_id = await self._next_case_id()

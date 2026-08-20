@@ -292,13 +292,13 @@ def _score_summaries(
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="任务2：标签 + 案例摘要 + 关键词评测")
-    parser.add_argument("--gold", default="data/eval/gold_extraction_cases.jsonl")
+    parser.add_argument("--gold", default="data/eval/gold_task2_820_cleaned.jsonl")
     parser.add_argument(
         "--extracted",
-        default=None,
+        default="data/eval/extracted_cases_hybrid_521.jsonl",
         help="任务一抽取结果 jsonl（含 case_summary）；提供后评摘要相似分",
     )
-    parser.add_argument("--output", default="data/eval/label_eval_report.json")
+    parser.add_argument("--output", default="data/eval/label_eval_report_820_llm.json")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--no-bert-score", action="store_true", help="摘要改用字符重叠")
     parser.add_argument("--bert-model", default=DEFAULT_BERT_MODEL)
@@ -311,7 +311,7 @@ async def main() -> None:
     )
     parser.add_argument(
         "--predictions-out",
-        default=None,
+        default="data/eval/predicted_risk_tags_820_llm.jsonl",
         help="逐案预测结果 jsonl 路径（含 pred/gold risk_tags）",
     )
     args = parser.parse_args()
@@ -534,20 +534,26 @@ async def main() -> None:
         ext_path = Path(args.extracted)
         if not ext_path.is_absolute():
             ext_path = _ROOT / ext_path
-        preds = _load_jsonl(ext_path)
-        pairs = _match_by_file(rows, preds)
-        matched = sum(1 for g, e in pairs if g is not None and e is not None)
-        report["case_summary"] = _score_summaries(
-            pairs,
-            use_bert=not args.no_bert_score,
-            bert_model=args.bert_model,
-            bert_device=args.bert_device,
-            bert_batch_size=args.bert_batch_size,
-        )
-        report["case_summary"]["matched_pairs"] = matched
-        report["case_summary"]["gold_cases"] = len(rows)
-        report["case_summary"]["pred_cases"] = len(preds)
-        report["case_summary"]["extracted"] = str(ext_path)
+        if not ext_path.exists():
+            report["case_summary"] = {
+                "skipped": True,
+                "reason": f"抽取文件不存在：{ext_path}",
+            }
+        else:
+            preds = _load_jsonl(ext_path)
+            pairs = _match_by_file(rows, preds)
+            matched = sum(1 for g, e in pairs if g is not None and e is not None)
+            report["case_summary"] = _score_summaries(
+                pairs,
+                use_bert=not args.no_bert_score,
+                bert_model=args.bert_model,
+                bert_device=args.bert_device,
+                bert_batch_size=args.bert_batch_size,
+            )
+            report["case_summary"]["matched_pairs"] = matched
+            report["case_summary"]["gold_cases"] = len(rows)
+            report["case_summary"]["pred_cases"] = len(preds)
+            report["case_summary"]["extracted"] = str(ext_path)
     else:
         report["case_summary"] = {
             "skipped": True,

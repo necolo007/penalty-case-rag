@@ -36,7 +36,9 @@ def _parse_json_obj(raw: str) -> dict:
 
 
 def predict_cn_tags_with_llm(llm: Any, violation_behavior: str) -> list[str]:
-    """与 scripts/eval_labels.py --with-llm 相同的中文 27 类打标。"""
+    """中文 27 类打标（评测 --with-llm / 入库 RiskTagger 共用，含 refine + 标签上限）。"""
+    from core.config import get_settings
+
     text = (violation_behavior or "").strip()
     if not text:
         return ["其他"]
@@ -56,7 +58,9 @@ def predict_cn_tags_with_llm(llm: Any, violation_behavior: str) -> list[str]:
     tags = data.get("risk_tags") or []
     if not isinstance(tags, list):
         tags = []
-    return refine_cn_tags(normalize_cn_tags([str(t) for t in tags]), text)
+    refined = refine_cn_tags(normalize_cn_tags([str(t) for t in tags]), text)
+    cap = max(int(getattr(get_settings(), "CN_TAG_CASE_MAX", 12) or 12), 1)
+    return refined[:cap]
 
 
 class RiskTagger:

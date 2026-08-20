@@ -58,14 +58,14 @@ def _resolve_raw_text(file_id: str, dirs: list[Path]) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="金标 raw_text 重抽（按 file_id 输出全部候选案例）")
-    parser.add_argument("--gold", default="data/eval/gold_extraction_cases.jsonl")
-    parser.add_argument("--output", default="data/eval/extracted_cases.jsonl")
+    parser.add_argument("--gold", default="data/eval/gold_extraction_521_cleaned.jsonl")
+    parser.add_argument("--output", default="data/eval/extracted_cases_hybrid_521.jsonl")
     parser.add_argument("--limit", type=int, default=None, help="限制 file_id 数量（非金标行数）")
     parser.add_argument(
         "--mode",
         choices=("llm_first", "regex_first"),
-        default="regex_first",
-        help="抽取模式；默认 regex_first 保证离线可复现",
+        default="llm_first",
+        help="抽取模式；默认 llm_first 与生产 EXTRACTION_MODE 对齐（需 --with-llm）",
     )
     parser.add_argument(
         "--with-llm",
@@ -102,6 +102,14 @@ def main() -> None:
     ]
 
     llm = None
+    if args.mode == "llm_first" and not args.with_llm:
+        if (settings.LLM_API_KEY or "").strip():
+            args.with_llm = True
+            print("info: llm_first 自动启用 LLM（已配置 LLM_API_KEY）", flush=True)
+        else:
+            print("warn: 无 LLM_API_KEY，llm_first 回退为 regex_first", flush=True)
+            args.mode = "regex_first"
+
     if args.with_llm:
         if not (settings.LLM_API_KEY or "").strip():
             raise SystemExit("--with-llm 需要配置 LLM_API_KEY")
@@ -110,7 +118,7 @@ def main() -> None:
         llm = create_llm_client(settings)
 
     if args.mode == "llm_first" and llm is None:
-        raise SystemExit("llm_first 需要同时传入 --with-llm")
+        raise SystemExit("llm_first 需要同时传入 --with-llm 或配置 LLM_API_KEY")
 
     engine = ExtractorEngine(
         llm_client=llm,

@@ -83,8 +83,8 @@ class Settings(BaseSettings):
     RETRIEVAL_DENSE_RAW_ENABLED: bool = True
     # 融合：max_merge=dense 族余弦取 max（默认）；weighted_rrf=多路加权 RRF
     RETRIEVAL_FUSION_MODE: str = "max_merge"
-    # CE 后对 Top-K 做 LLM 列表重排+减枝（抬 Judge 精确率；默认关）
-    RETRIEVAL_LLM_LISTWISE: bool = False
+    # CE 后对 Top-K 做 LLM 列表重排+减枝（与任务3 Judge 最优配置对齐；无 Key 时 assemble 自动跳过）
+    RETRIEVAL_LLM_LISTWISE: bool = True
     RETRIEVAL_LLM_LISTWISE_KEEP_MIN: int = 3
     RETRIEVAL_LLM_LISTWISE_KEEP_MAX: int = 10
 
