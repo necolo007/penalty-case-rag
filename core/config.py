@@ -112,6 +112,7 @@ class Settings(BaseSettings):
     RRF_MULTI_CHANNEL_BONUS: float = 0.05
     CN_TAG_PREDICT_MAX: int = 3
     CN_TAG_FINAL_MAX: int = 5
+    CN_TAG_CASE_MAX: int = 12
     CN_TAG_BM25_APPEND: int = 2
     RISK_ID_CAP: int = 3
     TAG_BACKFILL_TOP_CASES: int = 5

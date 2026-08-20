@@ -150,9 +150,13 @@ async def _ensure_tags_and_embedding(pool, case_id: str, row) -> dict:
 
     if not risk_tags and (row["violation_behavior"] or "").strip():
         try:
+            from core.config import get_settings as _gs
             from engine.classification.risk_tagger import RiskTagger
+            from engine.llm.client import create_llm_client
 
-            tagger = RiskTagger(pool)
+            settings = _gs()
+            llm = create_llm_client(settings) if (settings.LLM_API_KEY or "").strip() else None
+            tagger = RiskTagger(pool, llm_client=llm)
             tags = await tagger.classify(row["violation_behavior"])
             risk_tags = tags.get("display_tags") or []
             risk_type_ids = tags.get("competition_ids") or risk_type_ids

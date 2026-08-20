@@ -5,20 +5,20 @@
 
 用法：
   # 仅标签
-  python scripts/eval_labels.py --gold data/eval/gold_task2_521_cleaned.jsonl
+  python scripts/eval_labels.py --gold data/eval/gold_task2_820_cleaned.jsonl
 
   # 标签 + 摘要 BERTScore + 关键词（需抽取结果含 case_summary）
   python scripts/eval_labels.py \\
-    --gold data/eval/gold_task2_521_cleaned.jsonl \\
+    --gold data/eval/gold_task2_820_cleaned.jsonl \\
     --extracted data/eval/extracted_cases_hybrid_521.jsonl \\
-    --output data/eval/label_eval_task2_521_cleaned.json
+    --output data/eval/label_eval_task2_820_cleaned.json
 
   # LLM 打标 + 导出逐案预测
   python scripts/eval_labels.py \\
-    --gold data/eval/gold_task2_521_cleaned.jsonl \\
+    --gold data/eval/gold_task2_820_cleaned.jsonl \\
     --with-llm \\
-    --predictions-out data/eval/predicted_risk_tags_521_llm.jsonl \\
-    --output data/eval/label_eval_task2_521_llm.json
+    --predictions-out data/eval/predicted_risk_tags_820_llm.jsonl \\
+    --output data/eval/label_eval_task2_820_llm.json
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ import argparse
 import asyncio
 import itertools
 import json
-import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -42,14 +41,11 @@ from engine.classification.competition_label_map import (
     CANONICAL_CN_TAGS,
     _merged_keyword_map,
     cn_tags_to_competition_ids,
-    format_cn_tag_guide_for_prompt,
     normalize_cn_tags,
     predict_cn_tags_by_keywords,
     refine_cn_tags,
 )
-from engine.classification.risk_tagger import RiskTagger
-from engine.llm.client import ThinkingMode
-from engine.llm.prompts import RISK_CN_SYSTEM_PROMPT, RISK_CN_USER_PROMPT
+from engine.classification.risk_tagger import RiskTagger, predict_cn_tags_with_llm
 
 DEFAULT_BERT_MODEL = "bert-base-chinese"
 
@@ -62,44 +58,14 @@ def _load_jsonl(path: Path) -> list[dict]:
     ]
 
 
-def _parse_json_obj(raw: str) -> dict:
-    text = (raw or "").strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    return json.loads(text)
-
-
 def _postprocess_cn_tags(tags: list[str], violation_behavior: str) -> list[str]:
     """轻量对齐字典口径：具体形式补上位；电销场景去掉虚假宣传。"""
     return refine_cn_tags(tags, violation_behavior)
 
 
 def _llm_predict_cn_tags(llm: Any, violation_behavior: str) -> list[str]:
-    """用中文 27 类提示词直接预测 risk_tags。"""
-    text = (violation_behavior or "").strip()
-    if not text:
-        return ["其他"]
-    resp = llm.complete(
-        RISK_CN_USER_PROMPT.format(
-            tag_list="、".join(CANONICAL_CN_TAGS),
-            tag_guide=format_cn_tag_guide_for_prompt(max_chars=2800),
-            violation_behavior=text[:3500],
-        ),
-        system=RISK_CN_SYSTEM_PROMPT,
-        max_tokens=400,
-        temperature=0.1,
-        json_mode=True,
-        thinking=ThinkingMode.DISABLED,
-    )
-    data = _parse_json_obj(resp)
-    tags = data.get("risk_tags") or []
-    if not isinstance(tags, list):
-        tags = []
-    return _postprocess_cn_tags(
-        normalize_cn_tags([str(t) for t in tags]),
-        text,
-    )
+    """用中文 27 类提示词直接预测 risk_tags（与入库 RiskTagger 共用）。"""
+    return predict_cn_tags_with_llm(llm, violation_behavior)
 
 
 def _prf(tp: int, fp: int, fn: int) -> tuple[float, float, float]:
@@ -413,7 +379,7 @@ async def main() -> None:
                 except Exception:  # noqa: BLE001
                     llm_fail += 1
                     if tagger is not None:
-                        tags = await tagger.classify(text)
+                        tags = await tagger.classify(text, prefer_llm=False)
                         pred_tags = refine_cn_tags(
                             list(tags.get("display_tags") or []), text
                         )

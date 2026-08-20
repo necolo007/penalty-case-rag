@@ -168,7 +168,7 @@ _BUILTIN_CN_TAG_KEYWORDS: dict[str, list[str]] = {
         r"(?:存款|银行).{0,15}(?:比较|类比)",
     ],
     "贬低竞品": ["贬低竞品", "诋毁同业", "同业负面"],
-    "诱导投保": ["诱导投保", "限时抢购", "名额有限", "即将停售", "并未停售", "限时限额"],
+    "诱导投保": ["诱导投保", "限时抢购", "名额有限", "限时限额", "即将停售", "并未停售"],
     "避债避税": ["避债", "避税", "规避债务", "收益免税"],
     "回访违规": [
         "阻碍.*回访", "阻挠.*回访", "回访过程中", r"回访.{0,6}(?:问题|电话)",
@@ -365,54 +365,164 @@ _FICTIVE_YIELD_RE = re.compile(
 _DECEIVE_APPLICANT_RE = re.compile(
     r"欺骗投保人|不履行.{0,30}如实告知|诱导投保人不履行"
 )
+_FAKE_STOP_SALE_RE = re.compile(
+    r"即将停售|实际并未停售|从未停售|并未停售|以即将停售为由|"
+    r"停售等情况作虚假宣传|对保险产品价格、停售|以产品升级名义诱导"
+)
 _INDUCE_RE = re.compile(
-    r"即将停售|即将结束|限时(?:抢购|限额|限售)|名额有限|限时限额|"
-    r"虚构.{0,8}限售|实际并未停售|从未停售|并未停售"
+    r"限时抢购|名额有限|限时限额|即将停售|并未停售|"
+    r"停售等情况作虚假宣传|以产品升级名义诱导"
 )
 _PERSON_UNLICENSED_RE = re.compile(
     r"(?:未取得|没有|无).{0,8}(?:资格证|执业证|展业证|资格证书|执业证书)|"
-    r"无资格证|无执业证|无展业证|未按规定进行执业|执业登记"
+    r"无资格证|无执业证|无展业证|未按规定进行执业|执业登记|"
+    r"执业证书人员|无资格证书.{0,8}人员|人员从事保险销售"
 )
 _INST_UNLICENSED_RE = re.compile(
     r"委托.{0,40}(?:无资质|不具备资质|未取得.{0,16}资质).{0,24}"
     r"(?:机构|公司|平台).{0,20}(?:销售|代理)|"
     r"与无资质的第三方"
 )
+_TELESALES_RE = re.compile(r"电销|电话销售|电话营销")
+# 银行/存款名义卖保险 → 销售误导（含「存款赠送保险」等，勿只认「银行存款」四字）
+_BANK_MISLEAD_RE = re.compile(
+    r"销售误导|错误解释保险责任|银行存款|储蓄计划|以银行.{0,8}名义|"
+    r"存款赠送|存款送保险|以存款|像存款|存钱送|把保险当存款|"
+    r"银行理财名义|以理财名义|混淆.{0,8}存款|"
+    r"以(?:银行存款|银行理财|储蓄|理财).{0,12}(?:名义|形式).{0,20}(?:宣传|销售|介绍)|"
+    r"(?:购买保险|买保险|投保).{0,12}(?:宣传为|说成|称为).{0,8}(?:存钱|存款|储蓄)"
+)
+_FAKE_GIFT_RE = re.compile(r"虚假宣传赠送|宣传赠送.{0,24}并未|实际并未赠送|并未赠送")
+_REAL_EXTRA_INTEREST_RE = re.compile(
+    r"合同约定以外|合同外利益|回扣|返佣|赠送油卡|赠送体检|赠送礼品|赠送洗车"
+)
 _WEAKEN_RE = re.compile(r"不用担心|零风险|无风险|完全无风险|忽略免责|免责.{0,8}不重要|一定赔")
 _FAKE_CLIENT_RE = re.compile(
-    r"代签|代为签名|代投保人签名|代替投保人|"
+    r"客户信息不真实|客户行为不真实|"
+    r"代签|代为签名|代投保人签名|代替投保人|客户签名代签|"
+    r"代抄风险提示|笔迹与签名不一致|"
     r"代为抄写|抄录风险提示|抄录笔迹|"
-    r"信息不真实|信息记录虚假|信息资料不真实|"
+    r"客户(?:电话|地址|联系方式).{0,8}不真实|"
+    r"投保人.{0,12}信息不真实|被保险人.{0,12}信息不真实|"
+    r"被保险人信息资料不真实|没有被保险人.{0,8}信息|无被保险人.{0,8}信息|"
+    r"信息记录虚假|客户信息.{0,8}虚假|客户信息资料不真实|"
     r"回访记录造假|回访对象非|回访均不成功|"
     r"变更客户信息|更改.{0,12}电话号码|联系方式变更为|"
     r"虚构投保农户|虚假客户"
 )
+# 代理人入职/档案材料代签 → 勿打「客户信息不真实」
+_AGENT_ARCHIVE_SIGN_RE = re.compile(
+    r"(?:代理人|营销员|从业人员|入职|执业).{0,24}(?:档案|材料|资料).{0,24}代签|"
+    r"代签.{0,24}(?:代理人|营销员).{0,16}(?:档案|材料|资料)|"
+    r"入职档案.{0,16}代签|档案材料.{0,12}代签"
+)
 _OTHER_HINT_RE = re.compile(
     r"任职资格|未取得.{0,16}核准|牟取不正当利益|"
-    r"保险资金委托|投资理财|问题档案|自查报告"
+    r"保险资金委托|投资理财|问题档案|自查报告|"
+    r"业务财务数据不真实|编制提交虚假报表|编制虚假报表|"
+    r"编造虚假(?:资料|报表)|业务资料不真实|财务数据不真实|"
+    r"内控制度.{0,8}不到位|拒绝.{0,8}监督检查|妨碍监督检查|"
+    r"唆使.{0,12}代理人.{0,16}诚信|隐瞒事实"
 )
-_GUARANTEE_RE = re.compile(r"保证年化|保证收益率|保证收益\d|保证.{0,8}\d+(?:\.\d+)?\s*%")
+_GUARANTEE_RE = re.compile(
+    r"保证年化|保证收益率|保证收益\d|保证.{0,8}\d+(?:\.\d+)?\s*%|"
+    r"固定利息\s*\d|固定利息.{0,12}%|"
+    r"复利分红\s*\d|日复利滚息|"
+    r"分红\s*\d+\s*万|回报金额|保证回报|"
+    r"(?:年化|收益|分红|利息).{0,6}\d+(?:\.\d+)?\s*%.{0,8}保证|"
+    r"保证.{0,12}(?:年化|收益|分红|利息).{0,8}\d"
+)
+_INDUCE_NOT_DISCLOSE_RE = re.compile(r"诱导投保人不履行|不履行.{0,20}如实告知")
+_PRODUCT_MEETING_RE = re.compile(r"产品说明会|产说会")
+_TRAINING_MATERIAL_RE = re.compile(
+    r"培训(?:材料|课件|PPT|话术)|营销员培训|个险营销员培训|培训用.{0,8}课件"
+)
+_FAKE_EXPENSE_DETAIL_RE = re.compile(r"虚列|套取(?:费用|资金)|虚构.{0,12}费用")
+_FAKE_REPORT_ONLY_RE = re.compile(
+    r"业务财务数据不真实|编制提交虚假报表|编制虚假报表|营业费用核算不真实"
+)
+_STAFF_EXTRA_INTEREST_RE = re.compile(
+    r"给予.{0,16}(?:工作人员|员工|营销员|代理人|保险机构).{0,24}"
+    r"(?:合同外|约定以外|额外).{0,8}利益|"
+    r"(?:工作人员|员工).{0,12}合同约定以外"
+)
 
 
 def refine_cn_tags(tags: list[str] | None, violation_behavior: str = "") -> list[str]:
-    """对齐金标口径：细标签补上位；纠正代理人/无资质、停售诱导等易混标签。"""
+    """对齐口径：停售类保留诱导投保；人员无证≠无资质机构；未兑现赠送≠合同外利益。"""
     out = normalize_cn_tags(tags)
     blob = violation_behavior or ""
+
+    if blob and _FAKE_GIFT_RE.search(blob):
+        out = [t for t in out if t != "赠送利益"]
+        if "合同外利益" in out and not _REAL_EXTRA_INTEREST_RE.search(blob):
+            out = [t for t in out if t != "合同外利益"]
+        if "欺骗投保人" not in out:
+            out.insert(0, "欺骗投保人")
+
+    if blob and _STAFF_EXTRA_INTEREST_RE.search(blob) and "合同外利益" in out:
+        # 给予机构/工作人员的合同外利益 ≠ 给予投保人的合同外利益
+        if not re.search(r"投保人|被保险人|客户", blob):
+            out = [t for t in out if t != "合同外利益"]
 
     if any(t in out for t in ("赠送利益", "回扣返佣")) and "合同外利益" not in out:
         out.insert(0, "合同外利益")
 
-    if "虚假宣传" in out and any(k in blob for k in ("电销", "电话销售", "电话营销")):
-        out = [t for t in out if t != "虚假宣传"]
-        if "销售误导" not in out:
+    if blob and _TELESALES_RE.search(blob):
+        mislead_hit = bool(_BANK_MISLEAD_RE.search(blob))
+        induce_like = bool(_FAKE_STOP_SALE_RE.search(blob) or _INDUCE_RE.search(blob))
+        if "虚假宣传" in out:
+            out = [t for t in out if t != "虚假宣传"]
+        if mislead_hit and "销售误导" not in out:
             out.append("销售误导")
+        if "电销违规" not in out:
+            out.append("电销违规")
+        if induce_like and "销售误导" in out and not mislead_hit:
+            out = [t for t in out if t != "销售误导"]
 
-    if blob and _INDUCE_RE.search(blob) and "诱导投保" not in out:
-        out.append("诱导投保")
+    # 非电销场景的存款/银行名义卖保险，同样补销售误导
+    if blob and _BANK_MISLEAD_RE.search(blob) and "销售误导" not in out:
+        out.append("销售误导")
+    # 诱导不履行如实告知 → 欺骗投保人，不是诱导投保
+    if blob and _INDUCE_NOT_DISCLOSE_RE.search(blob):
+        if "欺骗投保人" not in out:
+            out.insert(0, "欺骗投保人")
+        if "诱导投保" in out and not (_FAKE_STOP_SALE_RE.search(blob) or _INDUCE_RE.search(blob)):
+            out = [t for t in out if t != "诱导投保"]
+
+    if blob and (_FAKE_STOP_SALE_RE.search(blob) or _INDUCE_RE.search(blob)):
+        if "诱导投保" not in out:
+            out.append("诱导投保")
+        if _FAKE_STOP_SALE_RE.search(blob) and "欺骗投保人" not in out:
+            out.insert(0, "欺骗投保人")
+
+    if blob and _PRODUCT_MEETING_RE.search(blob) and "产品说明会违规" not in out:
+        if re.search(r"管理不到位|违规|误导|虚假|未经备案|未按规定", blob):
+            out.append("产品说明会违规")
+    # 仅「产说会管理不到位」等笼统表述：保留产品说明会违规，不叠销售误导
+    if (
+        blob
+        and _PRODUCT_MEETING_RE.search(blob)
+        and re.search(r"管理不到位", blob)
+        and "销售误导" in out
+        and not re.search(r"销售误导行为|错误解释|银行存款|储蓄计划|片面", blob)
+    ):
+        out = [t for t in out if t != "销售误导"]
+
+    if blob and _TRAINING_MATERIAL_RE.search(blob):
+        if "培训材料违规" not in out and re.search(r"虚假宣传|误导|绝对化|不实", blob):
+            out.append("培训材料违规")
+        # 培训课件中的「虚假宣传」不是对客户的产品虚假宣传
+        if "虚假宣传" in out and not re.search(
+            r"宣传单|海报|公众号|短视频|对外宣传|广告",
+            blob,
+        ):
+            out = [t for t in out if t != "虚假宣传"]
 
     person_unlicensed = bool(blob and _PERSON_UNLICENSED_RE.search(blob))
     inst_unlicensed = bool(blob and _INST_UNLICENSED_RE.search(blob))
-    if person_unlicensed:
+    person_sales = bool(re.search(r"人员|营销员|从业人员|个人代理人", blob))
+    if person_unlicensed or (person_sales and re.search(r"资格证|执业证|展业证", blob)):
         if "代理人管理不到位" not in out:
             out.append("代理人管理不到位")
         if "委托无资质机构销售" in out and not inst_unlicensed:
@@ -424,6 +534,15 @@ def refine_cn_tags(tags: list[str] | None, violation_behavior: str = "") -> list
 
     if blob and _GUARANTEE_RE.search(blob) and "保证收益" not in out:
         out.append("保证收益")
+        # 有具体数字/金额的保证时，优先保证收益而非夸大收益
+        if "夸大收益" in out and not re.search(r"夸大收益|夸张|推测", blob):
+            out = [t for t in out if t != "夸大收益"]
+
+    if blob and "虚列费用套取资金" in out:
+        if _FAKE_REPORT_ONLY_RE.search(blob) and not _FAKE_EXPENSE_DETAIL_RE.search(blob):
+            out = [t for t in out if t != "虚列费用套取资金"]
+            if "其他" not in out:
+                out.append("其他")
 
     if blob and _ABS_EXPR_RE.search(blob) and "绝对化表述" not in out:
         out.append("绝对化表述")
@@ -437,9 +556,20 @@ def refine_cn_tags(tags: list[str] | None, violation_behavior: str = "") -> list
 
     if "弱化风险提示" in out and blob and not _WEAKEN_RE.search(blob):
         out = [t for t in out if t != "弱化风险提示"]
-    if blob and _FAKE_CLIENT_RE.search(blob) and "客户信息不真实" not in out:
+
+    fake_client_ok = bool(
+        blob
+        and _FAKE_CLIENT_RE.search(blob)
+        and not _AGENT_ARCHIVE_SIGN_RE.search(blob)
+    )
+    # 裸「代签」且落在代理人档案语境时不算客户信息不真实
+    if "客户信息不真实" in out and blob and _AGENT_ARCHIVE_SIGN_RE.search(blob):
+        if not re.search(r"投保人|被保险人|客户签名|回访|客户电话|客户地址", blob):
+            out = [t for t in out if t != "客户信息不真实"]
+            fake_client_ok = False
+    if fake_client_ok and "客户信息不真实" not in out:
         out.append("客户信息不真实")
-    elif "客户信息不真实" in out and blob and not _FAKE_CLIENT_RE.search(blob):
+    elif "客户信息不真实" in out and blob and not fake_client_ok and not _FAKE_CLIENT_RE.search(blob):
         out = [t for t in out if t != "客户信息不真实"]
         if _OTHER_HINT_RE.search(blob) and "其他" not in out and len(out) <= 1:
             out.append("其他")
@@ -449,6 +579,19 @@ def refine_cn_tags(tags: list[str] | None, violation_behavior: str = "") -> list
     )
     if need_deceive and "欺骗投保人" not in out:
         out.insert(0, "欺骗投保人")
+
+    # 仅「存款/银行名义」混淆产品属性 → 销售误导，不要升格为欺骗投保人
+    if (
+        blob
+        and "欺骗投保人" in out
+        and _BANK_MISLEAD_RE.search(blob)
+        and not _DECEIVE_APPLICANT_RE.search(blob)
+        and not _ABS_EXPR_RE.search(blob)
+        and not _FICTIVE_YIELD_RE.search(blob)
+        and not _FAKE_STOP_SALE_RE.search(blob)
+        and not _FAKE_GIFT_RE.search(blob)
+    ):
+        out = [t for t in out if t != "欺骗投保人"]
 
     return normalize_cn_tags(out)
 

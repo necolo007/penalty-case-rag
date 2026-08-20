@@ -138,21 +138,48 @@ def test_refine_telemarketing_drops_false_ads():
     text = "电话销售过程中对产品作虚假宣传"
     tags = refine_cn_tags(["虚假宣传", "电销违规"], text)
     assert "虚假宣传" not in tags
-    assert "销售误导" in tags
     assert "电销违规" in tags
 
 
-def test_refine_adds_induce_from_fake_stop_sale():
-    text = "以即将停售为由宣传实际并未停售的产品，并夸大保险责任。"
-    tags = refine_cn_tags(["欺骗投保人", "销售误导", "电销违规"], text)
+def test_refine_fake_stop_sale_keeps_induce_not_sales_mislead():
+    text = (
+        "在开展电销业务过程中,存在夸大保险产品收益、对法律法规政策作虚假宣传、"
+        "以即将停售为由宣传实际并未停售的产品等欺骗投保人的行为。"
+    )
+    tags = refine_cn_tags(["欺骗投保人", "夸大收益", "虚假宣传"], text)
     assert "诱导投保" in tags
+    assert "欺骗投保人" in tags
+    assert "电销违规" in tags
+    assert "虚假宣传" not in tags
+    assert "销售误导" not in tags
 
 
 def test_refine_person_unlicensed_is_agent_management():
-    text = "委托无资格证书、执业证书人员从事保险销售，并向其发放佣金。"
+    text = (
+        "委托无资格证书、执业证书人员从事保险销售一是与你公司签订劳动合同的"
+        "销售从业人员中,刘林林未取得资格证书和执业证书从事保险销售;"
+        "二是你公司存在委托未取得执业证书的非签约销售从业人员从事保险销售的情况。"
+    )
     tags = refine_cn_tags(["委托无资质机构销售", "虚列费用套取资金"], text)
     assert "代理人管理不到位" in tags
     assert "委托无资质机构销售" not in tags
+
+
+def test_refine_telesales_and_unfulfilled_gift_not_contract_extra():
+    text = (
+        "在开展电销业务过程中,存在夸大保险产品收益、以即将停售为由宣传实际并未停售的产品、"
+        "以虚假宣传赠送保险但实际并未赠送等欺骗投保人的行为。"
+    )
+    tags = refine_cn_tags(
+        ["合同外利益", "赠送利益", "欺骗投保人", "诱导投保", "虚假宣传"],
+        text,
+    )
+    assert "电销违规" in tags
+    assert "欺骗投保人" in tags
+    assert "诱导投保" in tags
+    assert "赠送利益" not in tags
+    assert "合同外利益" not in tags
+    assert "虚假宣传" not in tags
 
 
 def test_refine_drops_ungrounded_weaken_risk():
