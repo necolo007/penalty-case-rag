@@ -1,6 +1,6 @@
 """任务3：LLM-as-Judge 评测检索结果是否「合理相关」。
 
-读取已有 submission_*.jsonl + 查询文本，可选补全库内违法事实，对 Top-K 打 0/1/2。
+读取已有 submission_*.jsonl + 查询文本，可选补全库内违法事实，对 Top-K 打 0/1（1=相关，0=不相关）。
 用于辅助诊断（金标噪声时）；不替代 MRR/Recall@K。
 
 用法：
@@ -72,6 +72,19 @@ def _parse_judge(raw: str) -> dict:
     return {"judgements": [], "parse_error": True, "raw": text[:500]}
 
 
+def _to_binary_score(raw_score) -> int:
+    """1=相关，0=不相关。兼容旧 0/1/2 输出：≥1 视为相关。"""
+    try:
+        score = int(raw_score)
+    except (TypeError, ValueError):
+        return 0
+    if score >= 2:
+        return 1
+    if score == 1:
+        return 1
+    return 0
+
+
 def _normalize_judgements(data: dict, expected_ids: list[str]) -> list[dict]:
     raw_list = data.get("judgements") or data.get("judgments") or []
     by_id: dict[str, dict] = {}
@@ -81,15 +94,10 @@ def _normalize_judgements(data: dict, expected_ids: list[str]) -> list[dict]:
         cid = str(item.get("case_id") or "").strip()
         if not cid:
             continue
-        try:
-            score = int(item.get("score"))
-        except (TypeError, ValueError):
-            score = 0
-        score = max(0, min(2, score))
+        score = _to_binary_score(item.get("score"))
         by_id[cid] = {
             "case_id": cid,
             "score": score,
-            "same_risk_type": bool(item.get("same_risk_type")),
             "reason": (item.get("reason") or "")[:200],
         }
     out: list[dict] = []
@@ -100,7 +108,6 @@ def _normalize_judgements(data: dict, expected_ids: list[str]) -> list[dict]:
             out.append({
                 "case_id": cid,
                 "score": 0,
-                "same_risk_type": False,
                 "reason": "模型未返回该 case 评分",
             })
     return out
@@ -148,19 +155,23 @@ def _cases_block(cases: list[dict], case_meta: dict[str, dict]) -> str:
 
 def _agg(per_query: list[dict], top_k: int) -> dict:
     n = len(per_query) or 1
-    mean_at_k = sum(q["mean_score"] for q in per_query) / n
-    any2 = sum(1 for q in per_query if q["any_score_ge_2"]) / n
-    any1 = sum(1 for q in per_query if q["any_score_ge_1"]) / n
-    precision2 = sum(q["precision_ge_2"] for q in per_query) / n
-    mrr_ge2 = sum(q["mrr_ge_2"] for q in per_query) / n
+    hit_rel = sum(1 for q in per_query if q["hit_any_relevant"]) / n
+    prec_rel = sum(q["precision_relevant"] for q in per_query) / n
+    mrr_rel = sum(q["mrr_relevant"] for q in per_query) / n
+    mean_rel_rate = sum(q["mean_relevant_rate"] for q in per_query) / n
     return {
         "evaluated": len(per_query),
         "top_k": top_k,
-        "mean_relevance": round(mean_at_k, 4),
-        "hit_any_score>=2": round(any2, 4),
-        "hit_any_score>=1": round(any1, 4),
-        "precision_score>=2": round(precision2, 4),
-        "mrr_score>=2": round(mrr_ge2, 4),
+        "scoring": "binary_0_1",
+        "mean_relevant_rate": round(mean_rel_rate, 4),
+        "hit_any_relevant": round(hit_rel, 4),
+        "precision_relevant": round(prec_rel, 4),
+        "mrr_relevant": round(mrr_rel, 4),
+        # 兼容旧报告字段名（语义已改为 1=相关）
+        "mean_relevance": round(mean_rel_rate, 4),
+        "hit_any_score>=2": round(hit_rel, 4),
+        "precision_score>=2": round(prec_rel, 4),
+        "mrr_score>=2": round(mrr_rel, 4),
     }
 
 
@@ -239,14 +250,14 @@ async def judge_submission(
 
             judgements = _normalize_judgements(parsed, expected)
             scores = [j["score"] for j in judgements]
-            mean_score = sum(scores) / len(scores) if scores else 0.0
-            any2 = any(s >= 2 for s in scores)
-            any1 = any(s >= 1 for s in scores)
-            prec2 = (sum(1 for s in scores if s >= 2) / len(scores)) if scores else 0.0
-            mrr2 = 0.0
+            rel = [s == 1 for s in scores]
+            mean_rel_rate = sum(scores) / len(scores) if scores else 0.0
+            hit_any = any(rel)
+            prec_rel = (sum(scores) / len(scores)) if scores else 0.0
+            mrr_rel = 0.0
             for rank, s in enumerate(scores, 1):
-                if s >= 2:
-                    mrr2 = 1.0 / rank
+                if s == 1:
+                    mrr_rel = 1.0 / rank
                     break
 
             gset = gold_map.get(qid) or set()
@@ -259,11 +270,10 @@ async def judge_submission(
 
             rec = {
                 "question_id": qid,
-                "mean_score": round(mean_score, 4),
-                "any_score_ge_2": any2,
-                "any_score_ge_1": any1,
-                "precision_ge_2": round(prec2, 4),
-                "mrr_ge_2": round(mrr2, 4),
+                "mean_relevant_rate": round(mean_rel_rate, 4),
+                "hit_any_relevant": hit_any,
+                "precision_relevant": round(prec_rel, 4),
+                "mrr_relevant": round(mrr_rel, 4),
                 "gold_case_ids": sorted(gset),
                 "gold_in_topk": gold_in_topk,
                 "gold_best_rank": gold_best_rank,
@@ -280,7 +290,7 @@ async def judge_submission(
     # 金标未命中但 Judge 认为合理的比例
     gold_miss_but_ok = [
         q for q in per_query
-        if q["gold_case_ids"] and not q["gold_in_topk"] and q["any_score_ge_2"]
+        if q["gold_case_ids"] and not q["gold_in_topk"] and q["hit_any_relevant"]
     ]
     summary["gold_miss_but_judge_ok"] = round(
         len(gold_miss_but_ok) / (len(per_query) or 1), 4,
@@ -294,10 +304,10 @@ async def judge_submission(
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(
         f"Judge {submission_path.name}: n={summary['evaluated']} "
-        f"mean_rel={summary['mean_relevance']} "
-        f"hit@2={summary['hit_any_score>=2']} "
-        f"prec@2={summary['precision_score>=2']} "
-        f"mrr@2={summary['mrr_score>=2']} "
+        f"mean_rel={summary['mean_relevant_rate']} "
+        f"hit={summary['hit_any_relevant']} "
+        f"prec={summary['precision_relevant']} "
+        f"mrr={summary['mrr_relevant']} "
         f"gold_miss_but_ok={summary['gold_miss_but_judge_ok']}"
     )
     print(f"  report → {out_path}")
