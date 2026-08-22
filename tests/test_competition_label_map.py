@@ -12,10 +12,27 @@ from engine.classification.competition_label_map import (
 )
 
 
+def test_compliance_tags_map_to_official_r_codes():
+    """费率条款→R009、客户信息不实→R008；编制虚假财务(R006)不落到虚列(R005)。"""
+    assert cn_tags_to_competition_ids(["未按规定使用费率条款"]) == ["R009"]
+    assert cn_tags_to_competition_ids(["客户信息不真实"]) == ["R008"]
+    assert cn_tags_to_competition_ids(["回访违规"]) == ["R007"]
+    assert cn_tags_to_competition_ids(["培训材料违规"]) == ["R010"]
+    mixed = cn_tags_to_competition_ids(
+        ["未按规定使用费率条款", "客户信息不真实", "虚列费用套取资金"]
+    )
+    assert mixed == ["R009", "R008", "R005"]
+    assert "R006" not in mixed
+    assert normalize_cn_tags(["编制虚假财务资料"]) == ["其他"]
+    assert cn_tags_to_competition_ids(["编制虚假财务资料"]) == ["R011"]
+
+
 def test_cn_tags_map_to_r_codes():
     assert cn_tags_to_competition_ids(["合同外利益", "赠送利益"]) == ["R002"]
     assert "R001" in cn_tags_to_competition_ids(["销售误导", "承诺收益"])
     assert cn_tags_to_competition_ids(["虚列费用套取资金"]) == ["R005"]
+    assert cn_tags_to_competition_ids(["诱导投保"]) == ["R001"]
+    assert cn_tags_to_competition_ids(["虚假宣传"]) == ["R003"]
 
 
 def test_near_synonym_aliases():
@@ -34,17 +51,6 @@ def test_unknown_label_needs_review():
     assert detailed[0]["status"] == "needs_review"
     assert detailed[0]["normalized_label"] is None
     assert detailed[0]["raw_label"] == "完全不存在的标签XYZ"
-
-
-def test_compliance_tags_not_forced_to_r006():
-    """费率条款 / 客户信息不实 ≠ 编制虚假财务资料(R006)。"""
-    assert cn_tags_to_competition_ids(["未按规定使用费率条款"]) == []
-    assert cn_tags_to_competition_ids(["客户信息不真实"]) == []
-    mixed = cn_tags_to_competition_ids(
-        ["未按规定使用费率条款", "客户信息不真实", "虚列费用套取资金"]
-    )
-    assert mixed == ["R005"]
-    assert "R006" not in mixed
 
 
 def test_submission_risk_type_uses_cn_semicolon():
@@ -80,12 +86,18 @@ def test_format_submission_never_emits_r_codes():
 
 
 def test_catalog_loads_enriched_fields():
+    from engine.classification.competition_label_map import load_cn_tag_catalog
+
+    load_cn_tag_catalog.cache_clear()
     catalog = load_cn_tag_catalog()
     assert len(catalog) >= 27
     by_tag = {r["risk_tag"]: r for r in catalog}
     assert by_tag["夸大收益"].get("typical_behavior")
     assert by_tag["夸大收益"].get("exclusion_boundary")
     assert "承诺收益" in by_tag["夸大收益"]["exclusion_boundary"]
+    assert by_tag["培训材料违规"].get("competition_id") == "R010"
+    assert by_tag["客户信息不真实"].get("competition_id") == "R008"
+    assert by_tag["诱导投保"].get("competition_id") == "R001"
 
 
 def test_exclusion_boundary_prefers_promise_over_exaggerate():

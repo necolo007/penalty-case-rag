@@ -1,10 +1,10 @@
-"""27 类中文 risk_tag 与赛题 R001–R008 的映射（双层）。
+"""27 类中文 risk_tag 与赛题 R001–R011 的映射（双层）。
 
 第一层（官方输出）：27 类中文细标签 —— 展示、提交、评测、训练。
-第二层（内部召回）：仅在语义确属赛题八大类时写入 R00x；无法对齐的细标签
-  （如费率条款合规、客户信息不实）不强制挂靠，避免污染标签通道。
+第二层（内部召回）：写入 risk_type_dictionary.csv 中的 risk_type_R00；
+  「编制虚假财务资料」(R006) 无独立细标签，归一为「其他」，禁止落到虚列(R005)。
 
-CSV 典型行为/排除边界参与关键词预测与消歧。
+CSV 典型行为/排除边界参与关键词预测与消歧；risk_type / risk_type_R00 为竞赛粗类。
 """
 
 from __future__ import annotations
@@ -46,6 +46,7 @@ CANONICAL_CN_TAGS: tuple[str, ...] = (
 
 CANONICAL_CN_TAG_SET = frozenset(CANONICAL_CN_TAGS)
 
+# 与配套数据 risk_type_dictionary.csv 的 risk_type_R00 对齐（R001–R011）
 CN_TAG_TO_COMPETITION: dict[str, str] = {
     "欺骗投保人": "R001",
     "销售误导": "R001",
@@ -54,33 +55,57 @@ CN_TAG_TO_COMPETITION: dict[str, str] = {
     "保证收益": "R001",
     "弱化风险提示": "R001",
     "隐瞒重要信息": "R001",
-    "虚构收益率": "R001",
-    "绝对化表述": "R001",
     "电销违规": "R001",
-    "回访违规": "R001",
-    "避债避税": "R001",
+    "不当比较": "R001",
+    "贬低竞品": "R001",
+    "诱导投保": "R001",
     "合同外利益": "R002",
     "赠送利益": "R002",
     "回扣返佣": "R002",
-    "诱导投保": "R002",
     "虚假宣传": "R003",
     "产品说明会违规": "R003",
-    "培训材料违规": "R003",
-    "不当比较": "R003",
-    "贬低竞品": "R003",
+    "绝对化表述": "R003",
+    "虚构收益率": "R003",
+    "避债避税": "R003",
     "代理人管理不到位": "R004",
     "委托无资质机构销售": "R004",
     "虚列费用套取资金": "R005",
-    # 产品合规 / 业务数据问题：不属于「编制虚假财务资料」(R006)，不强制映射官方八大类
-    "未按规定使用费率条款": "",
-    "客户信息不真实": "",
-    "其他": "",
+    "回访违规": "R007",
+    "客户信息不真实": "R008",
+    "未按规定使用费率条款": "R009",
+    "培训材料违规": "R010",
+    "其他": "R011",
 }
 
-# 内部粗分桶（导航/统计用，非赛题官方 R00x）
-CN_TAG_INTERNAL_BUCKET: dict[str, str] = {
-    "未按规定使用费率条款": "产品合规",
-    "客户信息不真实": "业务数据不实",
+# 粗类中文名（导航/展示；来自配套 risk_type 列）
+CN_TAG_RISK_TYPE: dict[str, str] = {
+    "欺骗投保人": "销售误导",
+    "销售误导": "销售误导",
+    "夸大收益": "销售误导",
+    "承诺收益": "销售误导",
+    "保证收益": "销售误导",
+    "弱化风险提示": "销售误导",
+    "隐瞒重要信息": "销售误导",
+    "电销违规": "销售误导",
+    "不当比较": "销售误导",
+    "贬低竞品": "销售误导",
+    "诱导投保": "销售误导",
+    "合同外利益": "合同外利益",
+    "赠送利益": "合同外利益",
+    "回扣返佣": "合同外利益",
+    "虚假宣传": "宣传材料不真实",
+    "产品说明会违规": "宣传材料不真实",
+    "绝对化表述": "宣传材料不真实",
+    "虚构收益率": "宣传材料不真实",
+    "避债避税": "宣传材料不真实",
+    "代理人管理不到位": "销售人员职业登记管理不规范",
+    "委托无资质机构销售": "销售人员职业登记管理不规范",
+    "虚列费用套取资金": "虚挂中介费用套取资金",
+    "回访违规": "售后服务违规",
+    "客户信息不真实": "客户信息与隐私违规",
+    "未按规定使用费率条款": "产品费率及合同执行违规",
+    "培训材料违规": "内部管理与培训违规",
+    "其他": "其他类型违规行为",
 }
 
 COMPETITION_TO_CN_DEFAULT: dict[str, str] = {
@@ -89,9 +114,13 @@ COMPETITION_TO_CN_DEFAULT: dict[str, str] = {
     "R003": "虚假宣传",
     "R004": "代理人管理不到位",
     "R005": "虚列费用套取资金",
-    # R006 编制虚假财务资料：27 类无一一对应细标签，禁止默认落到「虚列费用」(R005)
-    "R007": "其他",
-    "R008": "其他",
+    # R006 编制虚假财务资料：无独立 27 类细标签，默认「其他」（禁止落到虚列 R005）
+    "R006": "其他",
+    "R007": "回访违规",
+    "R008": "客户信息不真实",
+    "R009": "未按规定使用费率条款",
+    "R010": "培训材料违规",
+    "R011": "其他",
 }
 
 CN_TAG_ALIASES: dict[str, list[str]] = {
@@ -103,13 +132,13 @@ CN_TAG_ALIASES: dict[str, list[str]] = {
     "宣传材料或产品说明会数据资料不真实": ["虚假宣传", "产品说明会违规"],
     "销售人员执业登记管理不规范": ["代理人管理不到位"],
     "虚构/虚挂中介业务套取费用": ["虚列费用套取资金"],
-    "编制虚假财务资料": ["虚列费用套取资金"],
+    # 编制虚假财务资料 ≠ 虚列套取；无细类时归「其他」
+    "编制虚假财务资料": ["其他"],
     "保险代理人侵害消费者权益": ["其他"],
     "利用开展保险业务牟取不正当利益": ["其他"],
     "销售违规": ["销售误导"],
     "消费者权益保护": ["其他"],
     "误导": ["销售误导"],
-    # 训练集近义/错写（P0-4）
     "夸大服务": ["夸大收益", "虚假宣传"],
     "隐藏重要信息": ["隐瞒重要信息"],
     "错误解释保险责任": ["销售误导", "欺骗投保人"],
@@ -255,14 +284,17 @@ def _extract_phrases_from_typical(text: str) -> list[str]:
 
 @lru_cache(maxsize=1)
 def load_cn_tag_catalog() -> list[dict[str, str]]:
-    """从 CSV 读取 27 类标签目录（含典型行为/排除边界/监管依据）；失败时回退内置常量。"""
+    """从 CSV 读取 27 类标签目录（含典型行为/排除边界/监管依据/R00x）；失败时回退内置常量。"""
     if _DICT_PATH.exists():
         rows: list[dict[str, str]] = []
         with _DICT_PATH.open(encoding="utf-8-sig") as f:
             for row in csv.DictReader(f):
                 tag = (row.get("risk_tag") or "").strip()
-                if not tag:
+                if not tag or tag not in CANONICAL_CN_TAG_SET:
                     continue
+                csv_cid = _row_field(row, "risk_type_R00", "competition_id").upper()
+                if csv_cid and not re.fullmatch(r"R0\d{2}", csv_cid):
+                    csv_cid = ""
                 rows.append({
                     "risk_tag": tag,
                     "description": _row_field(row, "description"),
@@ -270,7 +302,8 @@ def load_cn_tag_catalog() -> list[dict[str, str]]:
                     "exclusion_boundary": _row_field(row, "排除边界", "exclusion_boundary"),
                     "legal_basis": _row_field(row, "监管依据", "legal_basis"),
                     "category": _row_field(row, "category"),
-                    "competition_id": CN_TAG_TO_COMPETITION.get(tag, ""),
+                    "risk_type": _row_field(row, "risk_type") or CN_TAG_RISK_TYPE.get(tag, ""),
+                    "competition_id": csv_cid or CN_TAG_TO_COMPETITION.get(tag, ""),
                 })
         if rows:
             return rows
@@ -282,10 +315,29 @@ def load_cn_tag_catalog() -> list[dict[str, str]]:
             "exclusion_boundary": "",
             "legal_basis": "",
             "category": "",
+            "risk_type": CN_TAG_RISK_TYPE.get(t, ""),
             "competition_id": CN_TAG_TO_COMPETITION.get(t, ""),
         }
         for t in CANONICAL_CN_TAGS
     ]
+
+
+@lru_cache(maxsize=1)
+def competition_id_from_cn_tag(tag: str) -> str:
+    """优先读 CSV 目录中的 R00x，回退内置映射。"""
+    by_tag = {r["risk_tag"]: r for r in load_cn_tag_catalog()}
+    row = by_tag.get(tag) or {}
+    return (row.get("competition_id") or CN_TAG_TO_COMPETITION.get(tag, "") or "").strip()
+
+
+def cn_tags_to_competition_ids(tags: list[str] | None) -> list[str]:
+    """中文 risk_tags → 去重后的 R00x 列表（内部召回）。"""
+    ids: list[str] = []
+    for tag in normalize_cn_tags(tags):
+        cid = competition_id_from_cn_tag(tag)
+        if cid and cid not in ids:
+            ids.append(cid)
+    return ids
 
 
 @lru_cache(maxsize=1)
@@ -323,16 +375,6 @@ def format_cn_tag_guide_for_prompt(*, max_tags: int = 27, max_chars: int = 3500)
         if sum(len(x) + 1 for x in lines) >= max_chars:
             break
     return "\n".join(lines)
-
-
-def cn_tags_to_competition_ids(tags: list[str] | None) -> list[str]:
-    """中文 risk_tags → 去重后的 R00x 列表（内部召回）。"""
-    ids: list[str] = []
-    for tag in normalize_cn_tags(tags):
-        cid = CN_TAG_TO_COMPETITION.get(tag, "")
-        if cid and cid not in ids:
-            ids.append(cid)
-    return ids
 
 
 def competition_ids_to_cn_tags(competition_ids: list[str] | None,

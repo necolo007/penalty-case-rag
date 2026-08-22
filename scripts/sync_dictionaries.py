@@ -1,6 +1,10 @@
-"""将 docs/dic 扩充词典同步到 data/dictionaries。
+"""将词典同步到 data/dictionaries（及 risk 字典到 data/eval）。
 
-用法：python scripts/sync_dictionaries.py [--src ../docs/dic]
+用法：
+  python scripts/sync_dictionaries.py
+  python scripts/sync_dictionaries.py --src ../docs/dic
+  # 竞赛配套风险字典（含 R001–R011）：
+  python scripts/sync_dictionaries.py --src \"../docs/data/.../配套数据\"
 """
 
 from __future__ import annotations
@@ -69,6 +73,8 @@ def main() -> None:
     risk_src = src_dir / "risk_type_dictionary.csv"
     if risk_src.exists():
         _sync_risk_dict(risk_src, dest_dir / "risk_type_dictionary.csv")
+        eval_dest = project_root / "data" / "eval" / "risk_type_dictionary.csv"
+        _sync_risk_dict(risk_src, eval_dest)
     print("Done.")
 
 
