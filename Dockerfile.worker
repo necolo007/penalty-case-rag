@@ -1,5 +1,5 @@
-# 轻量 Worker：无 OCR/MinerU，解析降级为 pdfplumber。
-# OCR 能力请用 Dockerfile.worker.ocr（RapidOCR/ONNX）
+# 轻量 Worker：无 OCR，文字版 PDF 走 pdfplumber。
+# 扫描件请用 Dockerfile.worker.ocr（docker compose up worker）。
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -12,8 +12,7 @@ COPY api ./api
 COPY scripts ./scripts
 COPY db ./db
 
-# Worker 需要解析栈；OCR 请用 Dockerfile.worker.ocr。可选 MinerU：
-RUN pip install --no-cache-dir -e . && \
-    pip install --no-cache-dir -e ".[parsing-mineru]" || echo "parsing-mineru skipped (fallback to pdfplumber)"
+RUN pip install --no-cache-dir -U pip \
+    && pip install --no-cache-dir -e .
 
 CMD ["arq", "pipeline.tasks.ingest.WorkerSettings"]

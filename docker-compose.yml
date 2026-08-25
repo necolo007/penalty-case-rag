@@ -1,5 +1,5 @@
 services:
-  # PostgreSQL + pgvector + zhparser（本地 build，见 Dockerfile.postgres）
+  # PostgreSQL + pgvector + zhparser（见 Dockerfile.postgres）
   postgres:
     build:
       context: .
@@ -10,11 +10,10 @@ services:
       POSTGRES_USER: kb_admin
       POSTGRES_PASSWORD: ${PG_PASSWORD:-change-me-in-production}
     ports:
-      # Windows Hyper-V 常保留 5432；宿主机改用 PG_HOST_PORT（默认 15432）
+      # Windows Hyper-V 常占用 5432；宿主机用 PG_HOST_PORT（默认 15432）
       - "${PG_HOST_PORT:-15432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Schema 由 API/Worker 启动时 AutoMigrate 自动创建，无需 initdb.d 脚本
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "kb_admin"]
       interval: 5s
@@ -23,12 +22,12 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      # Windows Hyper-V 常保留 6379；宿主机改用 REDIS_HOST_PORT（默认 6534）
       - "${REDIS_HOST_PORT:-6534}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
 
+  # 可选整栈 API；日常开发可用本机 make api
   api:
     build:
       context: .
@@ -41,12 +40,11 @@ services:
       LLM_API_KEY: ${LLM_API_KEY}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
       LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-cloud}
-      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
-      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://tokendance.space/gateway/v1}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen-text-embedding-v4}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-local_bge_m3}
+      RETRIEVAL_BACKEND: ${RETRIEVAL_BACKEND:-bge_m3}
       RERANKER_DEVICE: ${RERANKER_DEVICE:-cpu}
       RERANKER_ENABLED: ${RERANKER_ENABLED:-true}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
       UPLOAD_DIR: /app/uploads
       DATA_DIR: /app/data
     ports:
@@ -60,7 +58,7 @@ services:
       - ./uploads:/app/uploads
       - ./data:/app/data
 
-  # ARQ Worker（RapidOCR + pdfplumber；扫描件请用此服务，勿本机装 OCR）
+  # 默认 OCR Worker（RapidOCR）；扫描件请用此服务，勿本机装 OCR
   worker:
     build:
       context: .
@@ -76,7 +74,7 @@ services:
       - ./uploads:/app/uploads
       - ./data:/app/data
 
-  # 轻量 Worker（无 OCR/MinerU，仅 pdfplumber 降级）— docker compose --profile lite up worker-lite
+  # 轻量 Worker（无 OCR，仅 pdfplumber）— docker compose --profile lite up -d worker-lite
   worker-lite:
     profiles: ["lite"]
     build:
@@ -92,30 +90,6 @@ services:
     volumes:
       - ./uploads:/app/uploads
       - ./data:/app/data
-
-  # GPU 加速 MinerU（需 WSL2 + NVIDIA Container Toolkit）— docker compose --profile gpu up worker-gpu
-  worker-gpu:
-    profiles: ["gpu"]
-    build:
-      context: .
-      dockerfile: Dockerfile.worker.ocr
-    env_file: .env
-    environment: *app_env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./uploads:/app/uploads
-      - ./data:/app/data
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
 volumes:
   pgdata:

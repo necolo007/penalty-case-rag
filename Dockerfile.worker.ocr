@@ -1,7 +1,7 @@
-# Worker：OCR 扫描件解析（Linux/WSL Docker）
+# OCR Worker：扫描件解析（Linux / WSL Docker）
 #
-# 使用 RapidOCR(ONNX)，避免 PaddlePaddle + OpenCV/Torch 同镜像 SIGSEGV。
-# 文字版 PDF → pdfplumber；扫描件 / 低置信度 → RapidOCR。
+# RapidOCR(ONNX) + pdfplumber：文字版 PDF 走 pdfplumber，扫描件走 RapidOCR。
+# 不安装 PaddleOCR / MinerU / torch。
 #
 # 构建：docker compose build worker
 # 启动：docker compose up -d worker
@@ -28,8 +28,6 @@ COPY api ./api
 COPY scripts ./scripts
 COPY db ./db
 
-# 基础依赖 + RapidOCR（onnxruntime）+ PDF 渲染（pymupdf）
-# 不安装 paddleocr / magic-pdf / torch
 RUN pip install --no-cache-dir -U pip setuptools wheel \
     && pip install --no-cache-dir -e . \
     && pip install --no-cache-dir \

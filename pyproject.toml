@@ -31,7 +31,7 @@ local-models = [
     "FlagEmbedding>=1.2",
     "torch>=2.2",
 ]
-# MinerU 文档解析（可选；扫描件 OCR 仅通过 Docker Worker，勿本机装 OCR）
+# 可选 MinerU（magic-pdf）；默认 OCR 走 Docker RapidOCR，日常可不装
 parsing-mineru = [
     "magic-pdf[full]>=0.7",
 ]

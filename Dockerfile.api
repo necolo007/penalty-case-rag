@@ -1,3 +1,5 @@
+# API 服务镜像（可选整栈部署；日常开发可本机 make api）
+# 含 local-models，便于容器内 EMBEDDING_PROVIDER=local_bge_m3
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -10,9 +12,8 @@ COPY api ./api
 COPY scripts ./scripts
 COPY db ./db
 
-# API 镜像默认不装本地模型/MinerU；Reranker 需要时加 local-models
-RUN pip install --no-cache-dir -e . && \
-    pip install --no-cache-dir -e ".[local-models]" || echo "local-models optional install skipped"
+RUN pip install --no-cache-dir -U pip \
+    && pip install --no-cache-dir -e ".[local-models]"
 
 EXPOSE 8000
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
