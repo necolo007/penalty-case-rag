@@ -74,26 +74,15 @@ class Reranker:
         query_text: str,
         candidates: list[SearchResult],
         top_k: int = 10,
-        *,
-        aux_query_text: str | None = None,
     ) -> list[SearchResult]:
         if not candidates:
             return []
         pairs = [[query_text, self._case_text(c)] for c in candidates]
         try:
             scores = await asyncio.to_thread(self._score_pairs, pairs)
-        except Exception as e:  # noqa: BLE001 - 精排失败降级为 RRF 排序
-            logger.warning("Reranker failed, fallback to RRF order: %s", e)
+        except Exception as e:  # noqa: BLE001 - 精排失败降级为召回顺序
+            logger.warning("Reranker failed, fallback to recall order: %s", e)
             return candidates[:top_k]
-
-        aux = (aux_query_text or "").strip()
-        if aux and aux != (query_text or "").strip():
-            aux_pairs = [[aux, self._case_text(c)] for c in candidates]
-            try:
-                aux_scores = await asyncio.to_thread(self._score_pairs, aux_pairs)
-                scores = [max(float(a), float(b)) for a, b in zip(scores, aux_scores)]
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Aux rerank failed, keep primary CE scores: %s", e)
 
         for c, s in zip(candidates, scores):
             c.score = float(s)
@@ -124,8 +113,6 @@ class NoopReranker(Reranker):
         query_text: str,
         candidates: list[SearchResult],
         top_k: int = 10,
-        *,
-        aux_query_text: str | None = None,
     ) -> list[SearchResult]:
         return candidates[:top_k]
 

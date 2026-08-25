@@ -18,23 +18,36 @@ data/eval/quarantine/*
 !data/raw_text/.gitkeep
 !data/eval/.gitkeep
 
-# 评测跑批产物（可随时删除后重跑生成）
+# 评测跑批产物（可随时删除后重跑生成；不入库）
 data/eval/submission*.jsonl
-data/eval/extracted_cases.jsonl
+data/eval/extracted_cases*.jsonl
 data/eval/eval_report*.json
 data/eval/eval_summary_latest.json
 data/eval/*_eval_report*.json
-data/eval/label_eval_report.json
-data/eval/extraction_eval_report*.json
+data/eval/label_eval*.json
+data/eval/extraction_eval*.json
+data/eval/judge_*.json
+data/eval/judge_*.jsonl
+data/eval/predicted_*.jsonl
+data/eval/query_rewrites_*.jsonl
+data/eval/task5_prompt_ablation.*
+data/eval/效果总结.md
+data/eval/评测报告*.md
 data/eval/gold_clean_report.json
 data/eval/penalty_content_review.csv
 data/eval/_channel_dump_*.json
 data/eval/ab_backends_*.json
 data/eval/example/
+data/eval/archive/
+data/eval/*.metrics.json
 
-# few-shot 导出流水（可 scripts/export_* 重生成；示例库本体需入库）
+# few-shot 导出流水 / 人工复核草稿（可 scripts 重生成；示例库本体需入库）
 data/fewshot/extract_*.jsonl
 data/fewshot/extract_tags_*.jsonl
+data/fewshot/extract_manifest.json
+data/fewshot/example.txt
+data/fewshot/*.review.md
+data/fewshot/REVIEW.md
 data/fewshot/HUMAN_REVIEW*
 data/fewshot/_dump*
 
