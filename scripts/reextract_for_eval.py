@@ -1,22 +1,10 @@
-"""从金标 raw_text 重抽，产出 extracted_cases.jsonl（任务1前置）。
+"""从 raw_text 重抽，产出 extracted_cases.jsonl（任务1）。
 
-评测口径修正（六次优化）：不再对每条金标行只选「一条最优」候选并强占金标
-case_id——这会在一份文书含多个当事人/多次处罚（一案两罚）时，把两条金标
-都拿去和同一条预测比较，无法真实反映多案例拆分质量。
-
-新做法：按 file_id 去重后，对每个原始文档只跑一次 extract()，把该文档
-产出的**全部**候选案例原样落盘（不裁剪、不绑定金标 case_id），由
-eval_extraction.py 按 file_id 做二分图匹配后再计算 P/R/F1。
+按 file_id 去重后整文档抽取全部候选，由 eval_extraction 再匹配打分。
 
 用法：
-  # 正则基线（默认，无 LLM）
-  python scripts/reextract_for_eval.py --mode regex_first \\
-    --gold data/eval/gold_extraction_cases.cleaned.jsonl
-
-  # LLM 主抽（需配置 LLM_API_KEY）
   python scripts/reextract_for_eval.py --mode llm_first --with-llm \\
-    --gold data/eval/gold_extraction_cases.cleaned.jsonl \\
-    --output data/eval/extracted_cases_llm.jsonl --limit 100
+    --gold data/eval/gold_extraction_cases.cleaned.jsonl
 """
 
 from __future__ import annotations
@@ -27,17 +15,18 @@ import sys
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_SCRIPTS = Path(__file__).resolve().parent
+for p in (_ROOT, _SCRIPTS):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 
-from core.config import get_settings
-from engine.classification.insurance_filter import InsuranceFilter
-from pipeline.extraction.extractor import ExtractorEngine
-from pipeline.parser.base import ParseResult
+from comp_paths import COMP_PACKAGE_REL  # noqa: E402
+from core.config import get_settings  # noqa: E402
+from engine.classification.insurance_filter import InsuranceFilter  # noqa: E402
+from pipeline.extraction.extractor import ExtractorEngine  # noqa: E402
+from pipeline.parser.base import ParseResult  # noqa: E402
 
-_DEFAULT_COMP = Path(
-    "docs/data/05-金融大模型与智能体赛道-基于知识增强检索的保险监管处罚案例知识库构建与合规审查智能匹配"
-)
+_DEFAULT_COMP = COMP_PACKAGE_REL
 
 
 def _load_jsonl(path: Path) -> list[dict]:

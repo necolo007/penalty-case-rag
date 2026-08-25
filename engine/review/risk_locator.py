@@ -1,12 +1,8 @@
-"""风险句定位：三重判断。
-
-① 高危词规则（确定性，最快）
-② 同义词词典命中（业务口语 → 风险类型）
-③ LLM 辅助判断（规则未覆盖的隐含风险，可关闭以控制成本）
-"""
+"""风险句定位：规则 → 词典 → 可选 LLM。跳过法条引用与程序性套话。"""
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 
 import asyncpg
@@ -17,6 +13,48 @@ from engine.review.risk_rules import match_risk_rules
 from engine.review.segmenter import Sentence
 
 logger = logging.getLogger(__name__)
+
+# 决定书/材料中的法条依据、程序告知——不是待审查的风险行为句
+_NON_RISK_SENTENCE_RE = re.compile(
+    r"("
+    r"上述行为违反了|"
+    r"违反了《|"
+    r"依据《|"
+    r"根据《|"
+    r"依照《|"
+    r"适用《|"
+    r"第[一二三四五六七八九十百零〇\d]+条|"
+    r"现依据|"
+    r"决定如下|"
+    r"责令改正|"
+    r"作出如下处罚|"
+    r"本决定书|"
+    r"如不服本决定|"
+    r"申请行政复议|"
+    r"提起行政诉讼|"
+    r"特此公告|"
+    r"联系地址|"
+    r"邮\s*编|"
+    r"本机关地址"
+    r")"
+)
+
+
+def is_non_risk_boilerplate(text: str) -> bool:
+    """法条引用、处罚决定套话等，不应作为风险语句。"""
+    t = (text or "").strip()
+    if not t:
+        return True
+    if _NON_RISK_SENTENCE_RE.search(t):
+        # 「行为事实 + 法条」合句且足够长时，留给规则/词典判断
+        behavior_cues = (
+            "虚列", "套取", "赠送", "返佣", "保本", "承诺收益", "欺骗投保",
+            "销售误导", "虚假宣传", "隐瞒", "诱导", "电销",
+        )
+        if any(c in t for c in behavior_cues) and len(t) > 80:
+            return False
+        return True
+    return False
 
 
 @dataclass
@@ -51,8 +89,9 @@ class RiskSentenceLocator:
         for sent in sentences:
             if sent.is_heading or len(sent.text) < self.min_sentence_len:
                 continue
+            if is_non_risk_boilerplate(sent.text):
+                continue
 
-            # ① 高危词规则
             rule_hits = match_risk_rules(sent.text, scene=scene)
             if rule_hits:
                 severity = "high" if any(h.severity == "high" for h in rule_hits) else "medium"
@@ -65,7 +104,6 @@ class RiskSentenceLocator:
                 ))
                 continue
 
-            # ② 同义词词典
             dict_hits = await self._dict_hits(sent.text)
             if dict_hits:
                 risky.append(RiskSentence(
@@ -77,7 +115,6 @@ class RiskSentenceLocator:
                 ))
                 continue
 
-            # ③ LLM 兜底（隐含风险）
             if self.llm_enabled and self.llm is not None:
                 llm_result = await self._llm_judge(sent)
                 if llm_result is not None:

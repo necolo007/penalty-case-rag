@@ -24,7 +24,7 @@ for p in (_ROOT, _SCRIPTS):
 from core.db import close_pool
 from core.redis_client import close_redis
 from engine.retrieval.base import SearchQuery
-from eval_metrics import compute_retrieval_metrics
+from eval_metrics import DEFAULT_K_VALUES, compute_retrieval_metrics
 from eval_retrieval_local import (
     _load_jsonl,
     _normalize_questions,
@@ -68,7 +68,7 @@ async def _eval_backend(
         if i % 10 == 0 or i == len(questions):
             print(f"  {backend} progress {i}/{len(questions)}")
 
-    metrics = compute_retrieval_metrics(submission, gold, k_values=[5, 10])
+    metrics = compute_retrieval_metrics(submission, gold, k_values=DEFAULT_K_VALUES)
     out = {
         "backend": backend,
         "metrics": {k: v for k, v in metrics.items() if k != "per_query"},

@@ -5,20 +5,28 @@
 
 用法：
   # 仅标签
-  python scripts/eval_labels.py --gold data/eval/gold_task2_820_cleaned.jsonl
+  python scripts/eval_labels.py --gold data/eval/gold_task2_822_cleaned.jsonl
 
   # 标签 + 摘要 BERTScore + 关键词（需抽取结果含 case_summary）
   python scripts/eval_labels.py \\
-    --gold data/eval/gold_task2_820_cleaned.jsonl \\
+    --gold data/eval/gold_task2_822_cleaned.jsonl \\
     --extracted data/eval/extracted_cases_hybrid_521.jsonl \\
-    --output data/eval/label_eval_task2_820_cleaned.json
+    --output data/eval/label_eval_task2_822_cleaned.json
 
   # LLM 打标 + 导出逐案预测
   python scripts/eval_labels.py \\
-    --gold data/eval/gold_task2_820_cleaned.jsonl \\
+    --gold data/eval/gold_task2_822_cleaned.jsonl \\
     --with-llm \\
-    --predictions-out data/eval/predicted_risk_tags_820_llm.jsonl \\
-    --output data/eval/label_eval_task2_820_llm.json
+    --predictions-out data/eval/predicted_risk_tags_822_llm.jsonl \\
+    --output data/eval/label_eval_report_822_llm.json
+
+  # 动态 few-shot A/B：完整金标评测；示例库须来自评测集外（如 Excel）
+  python scripts/eval_labels.py --gold data/eval/gold_task2_822_cleaned.jsonl \\
+    --with-llm --no-fewshot --no-bert-score \\
+    --output data/eval/label_eval_task2_full_nofs.json
+  python scripts/eval_labels.py --gold data/eval/gold_task2_822_cleaned.jsonl \\
+    --with-llm --fewshot --fewshot-bank data/fewshot/risk_tag_fewshot_bank_excel.jsonl \\
+    --no-bert-score --output data/eval/label_eval_task2_full_excel_fs.json
 """
 
 from __future__ import annotations
@@ -63,9 +71,26 @@ def _postprocess_cn_tags(tags: list[str], violation_behavior: str) -> list[str]:
     return refine_cn_tags(tags, violation_behavior)
 
 
-def _llm_predict_cn_tags(llm: Any, violation_behavior: str) -> list[str]:
+def _llm_predict_cn_tags(
+    llm: Any,
+    violation_behavior: str,
+    *,
+    fewshot: bool | None = None,
+    fewshot_bank: Any = None,
+    exclude_case_ids: list[str] | None = None,
+    fewshot_mode: str | None = None,
+    fewshot_fixed_ids: str | None = None,
+) -> list[str]:
     """用中文 27 类提示词直接预测 risk_tags（与入库 RiskTagger 共用）。"""
-    return predict_cn_tags_with_llm(llm, violation_behavior)
+    return predict_cn_tags_with_llm(
+        llm,
+        violation_behavior,
+        fewshot=fewshot,
+        fewshot_bank=fewshot_bank,
+        exclude_case_ids=exclude_case_ids,
+        fewshot_mode=fewshot_mode,
+        fewshot_fixed_ids=fewshot_fixed_ids,
+    )
 
 
 def _prf(tp: int, fp: int, fn: int) -> tuple[float, float, float]:
@@ -292,13 +317,13 @@ def _score_summaries(
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="任务2：标签 + 案例摘要 + 关键词评测")
-    parser.add_argument("--gold", default="data/eval/gold_task2_820_cleaned.jsonl")
+    parser.add_argument("--gold", default="data/eval/gold_task2_822_cleaned.jsonl")
     parser.add_argument(
         "--extracted",
         default="data/eval/extracted_cases_hybrid_521.jsonl",
         help="任务一抽取结果 jsonl（含 case_summary）；提供后评摘要相似分",
     )
-    parser.add_argument("--output", default="data/eval/label_eval_report_820_llm.json")
+    parser.add_argument("--output", default="data/eval/label_eval_report_822_llm.json")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--no-bert-score", action="store_true", help="摘要改用字符重叠")
     parser.add_argument("--bert-model", default=DEFAULT_BERT_MODEL)
@@ -311,8 +336,31 @@ async def main() -> None:
     )
     parser.add_argument(
         "--predictions-out",
-        default="data/eval/predicted_risk_tags_820_llm.jsonl",
+        default="data/eval/predicted_risk_tags_822_llm.jsonl",
         help="逐案预测结果 jsonl 路径（含 pred/gold risk_tags）",
+    )
+    parser.add_argument(
+        "--fewshot", dest="fewshot", action="store_true", default=None,
+        help="强制启用动态 few-shot（默认跟随 FEWSHOT_ENABLED 配置）",
+    )
+    parser.add_argument(
+        "--no-fewshot", dest="fewshot", action="store_false",
+        help="关闭动态 few-shot，用于 A/B 对比",
+    )
+    parser.add_argument(
+        "--fewshot-bank", default=None,
+        help="覆盖示例库路径（默认取 FEWSHOT_BANK_PATH）",
+    )
+    parser.add_argument(
+        "--fewshot-mode",
+        default=None,
+        choices=["dynamic", "fixed"],
+        help="dynamic=按案检索；fixed=每案同一批固定示例（默认跟随 FEWSHOT_MODE）",
+    )
+    parser.add_argument(
+        "--fewshot-fixed-ids",
+        default=None,
+        help="固定样本 ID，逗号分隔（默认跟随 FEWSHOT_FIXED_IDS）",
     )
     args = parser.parse_args()
 
@@ -320,6 +368,7 @@ async def main() -> None:
     if not gold_path.is_absolute():
         gold_path = _ROOT / gold_path
     rows = _load_jsonl(gold_path)
+
     if args.limit:
         rows = rows[: args.limit]
 
@@ -333,11 +382,45 @@ async def main() -> None:
             raise SystemExit("--with-llm 需要配置 LLM_API_KEY")
         llm = create_llm_client(settings)
 
+    fewshot_bank = None
+    fewshot_info: dict[str, Any] = {"requested": args.fewshot}
+    if args.fewshot is not False:
+        from engine.classification.fewshot import FewShotBank, get_default_bank
+
+        try:
+            fewshot_bank = (
+                FewShotBank.from_jsonl(args.fewshot_bank)
+                if args.fewshot_bank
+                else get_default_bank()
+            )
+        except Exception as exc:  # noqa: BLE001 - few-shot 缺失不应阻断评测
+            print(f"warn: few-shot bank unavailable ({exc}); 继续用纯规则 Prompt")
+        if fewshot_bank is not None:
+            from core.config import get_settings
+
+            settings = get_settings()
+            mode = (args.fewshot_mode or getattr(settings, "FEWSHOT_MODE", "dynamic") or "dynamic").strip().lower()
+            fixed_ids = args.fewshot_fixed_ids or getattr(settings, "FEWSHOT_FIXED_IDS", "")
+            stats = fewshot_bank.stats()
+            fewshot_info.update({
+                "bank": stats["name"],
+                "examples": stats["examples"],
+                "tags_covered": stats["tags_covered"],
+                "dense_channel": stats["dense_channel"],
+                "mode": mode,
+                "fixed_ids": fixed_ids if mode == "fixed" else None,
+            })
+            print(
+                f"few-shot bank: {stats['name']} examples={stats['examples']} "
+                f"tags_covered={stats['tags_covered']} mode={mode}"
+                + (f" fixed_ids={fixed_ids}" if mode == "fixed" else "")
+            )
+
     pool = None
     tagger = None
     try:
         pool = await create_pool()
-        tagger = RiskTagger(pool, llm_client=llm)
+        tagger = RiskTagger(pool, llm_client=llm, fewshot_bank=fewshot_bank)
     except Exception as exc:  # noqa: BLE001
         if llm is None:
             raise
@@ -372,9 +455,19 @@ async def main() -> None:
             gold_set = set(gold_tags)
             method = "rule_cn_dict"
 
+            case_id = str(item.get("case_id") or "")
             if llm is not None:
                 try:
-                    pred_tags = _llm_predict_cn_tags(llm, text)
+                    # 排除自身：示例库与金标同源，否则等于把答案抄进提示词
+                    pred_tags = _llm_predict_cn_tags(
+                        llm,
+                        text,
+                        fewshot=args.fewshot,
+                        fewshot_bank=fewshot_bank,
+                        exclude_case_ids=[case_id] if case_id else None,
+                        fewshot_mode=args.fewshot_mode,
+                        fewshot_fixed_ids=args.fewshot_fixed_ids,
+                    )
                     method = "llm_cn"
                 except Exception:  # noqa: BLE001
                     llm_fail += 1
@@ -491,6 +584,12 @@ async def main() -> None:
         "evaluated": len(rows),
         "tagging_mode": "llm_cn" if args.with_llm else "rule_cn_dict",
         "llm_fail": llm_fail if args.with_llm else 0,
+        "gold": str(gold_path),
+        "fewshot": (
+            {"enabled": False, "reason": "--no-fewshot"}
+            if args.fewshot is False
+            else {"enabled": fewshot_bank is not None, **fewshot_info}
+        ),
         "risk_tags": {
             "label_accuracy": round(exact / n, 4),
             "label_exact_match_accuracy": round(exact / n, 4),
@@ -568,6 +667,7 @@ async def main() -> None:
     summary = {
         "evaluated": report["evaluated"],
         "tagging_mode": report.get("tagging_mode"),
+        "fewshot": report.get("fewshot", {}).get("enabled"),
         "label_accuracy": report["risk_tags"]["label_accuracy"],
         "macro_f1": report["macro_f1"],
         "competition_id_macro_f1": report["competition_id_macro_f1"],

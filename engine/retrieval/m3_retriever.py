@@ -1,13 +1,4 @@
-"""BGE-M3 dense + sparse 混合检索引擎（任务3默认后端）。
-
-管线：
-  原始 query → LLM/同义词改写（+ 可选 HyDE）→ BGE-M3 encode
-             → dense(原文) / dense(改写) / dense(HyDE) / sparse 并行召回
-             → 融合（默认 dense 余弦 max；可选加权 RRF）→ Reranker 精排
-             → 可选 LLM 列表重排+减枝 → Top-K
-
-HyDE：用 LLM 生成「假想违法事实」（决定书语体）再 embed，缩小口语↔文书鸿沟。
-"""
+"""BGE-M3 dense/sparse 混合检索（任务3 默认后端）。"""
 
 from __future__ import annotations
 
@@ -15,6 +6,7 @@ import asyncio
 import logging
 import time
 
+from core.config import get_settings
 from engine.classification.competition_label_map import (
     cn_tags_to_competition_ids,
     predict_cn_tags_by_keywords,
@@ -31,13 +23,6 @@ from engine.retrieval.sparse_retriever import SparseRetriever
 from engine.retrieval.vector_retriever import VectorRetriever
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_M3_WEIGHTS = {
-    "dense_raw": 0.4,
-    "dense": 0.6,
-    "dense_hyde": 0.35,
-    "sparse": 0.2,
-}
 
 __all__ = ["M3HybridRetriever", "RetrievalResponse"]
 
@@ -75,7 +60,7 @@ class M3HybridRetriever:
         self.reranker = reranker
         self.fusion_size = fusion_size
         self.rerank_candidates = rerank_candidates
-        self.channel_weights = channel_weights or dict(DEFAULT_M3_WEIGHTS)
+        self.channel_weights = channel_weights or get_settings().m3_rrf_channel_weights()
         self.rrf_k = rrf_k
         self.multi_channel_bonus = multi_channel_bonus
         self.cn_tag_predict_max = cn_tag_predict_max

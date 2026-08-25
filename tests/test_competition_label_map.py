@@ -24,6 +24,8 @@ def test_compliance_tags_map_to_official_r_codes():
     assert mixed == ["R009", "R008", "R005"]
     assert "R006" not in mixed
     assert normalize_cn_tags(["编制虚假财务资料"]) == ["其他"]
+    assert normalize_cn_tags(["编制虚假业务资料"]) == ["其他"]
+    assert normalize_cn_tags(["编制虚假财务数据"]) == ["其他"]
     assert cn_tags_to_competition_ids(["编制虚假财务资料"]) == ["R011"]
 
 
@@ -86,8 +88,6 @@ def test_format_submission_never_emits_r_codes():
 
 
 def test_catalog_loads_enriched_fields():
-    from engine.classification.competition_label_map import load_cn_tag_catalog
-
     load_cn_tag_catalog.cache_clear()
     catalog = load_cn_tag_catalog()
     assert len(catalog) >= 27
@@ -198,6 +198,31 @@ def test_refine_drops_ungrounded_weaken_risk():
     text = "产说会宣传分红不确定，未说明高中低档演示。"
     tags = refine_cn_tags(["销售误导", "弱化风险提示"], text)
     assert "弱化风险提示" not in tags
+
+
+def test_refine_xulie_without_misuse_becomes_other():
+    tags = refine_cn_tags(["虚列费用套取资金"], "虚列营业费用，财务数据不真实")
+    assert "虚列费用套取资金" not in tags
+    assert "其他" in tags
+
+
+def test_refine_keeps_xulie_with_misuse():
+    tags = refine_cn_tags(
+        ["虚列费用套取资金"],
+        "虚列营业费用贴补手续费用于发放销售奖励",
+    )
+    assert "虚列费用套取资金" in tags
+
+
+def test_refine_private_policy_maps_deceive():
+    tags = refine_cn_tags([], "私印保单并向投保人隐瞒重要条款")
+    assert "欺骗投保人" in tags
+
+
+def test_refine_promise_ratio_return_not_contract_extra():
+    text = "承诺按比例返还保费，未实际赠送礼品"
+    tags = refine_cn_tags(["合同外利益"], text)
+    assert "合同外利益" not in tags
 
 
 def test_refine_keeps_proxy_signature_as_fake_client_info():

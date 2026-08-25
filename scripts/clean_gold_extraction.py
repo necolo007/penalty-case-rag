@@ -1,33 +1,11 @@
-"""清洗竞赛金标 gold_extraction_cases.jsonl 中的系统性字段噪声。
+"""清洗 gold_extraction_cases.jsonl 字段噪声。
 
-背景（见 data/eval/archive/reports/评测报告_最新.md 六次优化 §三）：
-  金标存在标签前缀残留、文号拼接下一字段、处罚内容整案转储、
-  「保险机构」/「见原文」占位符、监管机关截断等噪声。本脚本做两层清洗：
-
-  ① 规则清洗（默认启用，纯确定性，不依赖原文）：
-     - party_name：去掉「当事人:」等标签前缀；去掉「一、」编号并截断「二、」后的
-       多当事人拼接；压掉中文间版面断行空格；清空「…行政处罚决定书」标题/
-       机关名误标（括号内有真当事人则提取）
-     - penalty_doc_no：截到「…号」，去掉后接的「被处罚当事人」等
-     - regulator：去掉「名称」标签残留；「…监管」补全为「…监管局」
-     - violation_behavior：去掉标签前缀/程序性套话；压掉中文间空格
-     - penalty_content：占位符「见原文」/整案转储清空（留给原文回填）
-
-  ② 原文回填（--from-raw，可选）：对「保险机构」占位符、空/见原文处罚内容、
-     整案转储式 penalty_content、空 regulator 等，从 raw_text/{file_id}.txt
-     用规则引擎重抽后回填（不改动已有合理值）。
+规则清洗默认开启；`--from-raw` 可从 raw_text 回填占位符。
 
 用法：
-  # 仅规则清洗，写出副本（不覆盖原文件）
   python scripts/clean_gold_extraction.py \\
-    --input \"../docs/data/.../配套数据/gold_extraction_cases.jsonl\" \\
+    --input data/eval/gold_extraction_cases.jsonl \\
     --output data/eval/gold_extraction_cases.cleaned.jsonl
-
-  # 规则 + 原文回填
-  python scripts/clean_gold_extraction.py --from-raw \\
-    --input \".../gold_extraction_cases.jsonl\" \\
-    --output data/eval/gold_extraction_cases.cleaned.jsonl \\
-    --report data/eval/gold_clean_report.json
 """
 
 from __future__ import annotations
@@ -40,12 +18,14 @@ from collections import Counter
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_SCRIPTS = Path(__file__).resolve().parent
+for p in (_ROOT, _SCRIPTS):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
 
-_DEFAULT_COMP = Path(
-    "docs/data/05-金融大模型与智能体赛道-基于知识增强检索的保险监管处罚案例知识库构建与合规审查智能匹配"
-)
+from comp_paths import COMP_PACKAGE_REL  # noqa: E402
+
+_DEFAULT_COMP = COMP_PACKAGE_REL
 
 _PARTY_LABEL_PREFIXES = (
     "被处罚单位名称", "受处罚单位名称", "被处罚人名称", "受处罚人名称",

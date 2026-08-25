@@ -154,10 +154,15 @@ async def _ensure_tags_and_embedding(pool, case_id: str, row) -> dict:
             from engine.classification.risk_tagger import RiskTagger
             from engine.llm.client import create_llm_client
 
+            from api.dependencies import get_fewshot_bank
+
             settings = _gs()
             llm = create_llm_client(settings) if (settings.LLM_API_KEY or "").strip() else None
-            tagger = RiskTagger(pool, llm_client=llm)
-            tags = await tagger.classify(row["violation_behavior"])
+            tagger = RiskTagger(pool, llm_client=llm, fewshot_bank=get_fewshot_bank())
+            # 排除自身：示例库可能已收录该案例，避免用答案当提示
+            tags = await tagger.classify(
+                row["violation_behavior"], exclude_case_ids=[case_id],
+            )
             risk_tags = tags.get("display_tags") or []
             risk_type_ids = tags.get("competition_ids") or risk_type_ids
             await pool.execute(

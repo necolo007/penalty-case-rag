@@ -5,6 +5,7 @@ import logging
 from core.config import get_settings
 from core.db import create_pool
 from core.redis_client import get_redis
+from engine.classification.fewshot import FewShotBank, get_default_bank
 from engine.embedding.cache import CachedQueryEncoder
 from engine.embedding.provider import create_embedding_provider
 from engine.llm.client import create_llm_client
@@ -32,6 +33,7 @@ class AppState:
     generator: ReviewGenerator | None = None
     material_reviewer: MaterialReviewer | None = None
     risk_predictor: RiskPredictor | None = None
+    fewshot_bank: FewShotBank | None = None
 
 
 state = AppState()
@@ -45,6 +47,9 @@ async def init_app_state() -> None:
     llm = create_llm_client(settings) if settings.LLM_API_KEY else None
     embedder = create_embedding_provider(settings)
     query_encoder = CachedQueryEncoder(embedder, redis, ttl=settings.EMBEDDING_CACHE_TTL)
+
+    # 任务2 示例库：启动时预热
+    fewshot_bank = get_default_bank()
 
     synonym_expander = SynonymExpander(pool)
     rewriter = (
@@ -87,19 +92,22 @@ async def init_app_state() -> None:
     state.retriever = retriever
     state.generator = generator
     state.risk_predictor = risk_predictor
+    state.fewshot_bank = fewshot_bank
     if generator is not None:
         state.material_reviewer = MaterialReviewer(
             pool=pool, locator=locator, retriever=retriever, generator=generator,
         )
     logger.info(
-        "App state initialized (backend=%s, llm=%s, embedding=%s, rerank_cand=%s, fusion=%s)",
+        "App state initialized (backend=%s, llm=%s, embedding=%s, rerank_cand=%s, fusion=%s, "
+        "fewshot=%s)",
         settings.RETRIEVAL_BACKEND, bool(llm), embedder.model_name,
         settings.RETRIEVAL_RERANK_CANDIDATES, settings.RETRIEVAL_FUSION_SIZE,
+        len(fewshot_bank) if fewshot_bank is not None else "off",
     )
 
 
 class _NoLLMRewriter:
-    """无 LLM Key 场景（本地开发）：仅同义词词典改写"""
+    """无 LLM 时仅同义词改写。"""
 
     def __init__(self, synonym_expander: SynonymExpander):
         self.synonym_expander = synonym_expander
@@ -127,3 +135,7 @@ def get_material_reviewer() -> MaterialReviewer | None:
 
 def get_risk_predictor() -> RiskPredictor:
     return state.risk_predictor
+
+
+def get_fewshot_bank() -> FewShotBank | None:
+    return state.fewshot_bank

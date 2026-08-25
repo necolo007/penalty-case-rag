@@ -1,10 +1,10 @@
-"""案例侧嵌入文本构造。
-
-参赛优化：用「违规行为 + 案件总结」结构化拼接，避免 raw_text 通用套话稀释语义。
-入库 / reindex / 人工确认补嵌共用本函数，保证 query-doc 编码一致。
-"""
+"""案例嵌入文本：违规行为 + 案件总结。"""
 
 from __future__ import annotations
+
+EMBED_VB_PREFIX = "违规行为："
+EMBED_SUMMARY_PREFIX = "案件总结："
+EMBED_EMPTY_FALLBACK = "保险监管处罚案例"
 
 
 def build_case_embed_text(
@@ -19,11 +19,11 @@ def build_case_embed_text(
 
     parts: list[str] = []
     if vb:
-        parts.append(f"违规行为：{vb}")
+        parts.append(f"{EMBED_VB_PREFIX}{vb}")
     if summary and summary != vb:
-        parts.append(f"案件总结：{summary}")
+        parts.append(f"{EMBED_SUMMARY_PREFIX}{summary}")
 
     text = "\n".join(parts).strip()
     if not text:
-        return "保险监管处罚案例"
+        return EMBED_EMPTY_FALLBACK
     return text[:max_chars]

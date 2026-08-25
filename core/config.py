@@ -1,4 +1,4 @@
-"""全局配置：全部从环境变量 / .env 读取，API Key 禁止写入代码仓库。"""
+"""全局配置：环境变量 / .env；API Key 勿写入仓库。"""
 
 from __future__ import annotations
 
@@ -15,10 +15,7 @@ DEFAULT_HF_ENDPOINT = "https://hf-mirror.com"
 
 
 def apply_huggingface_mirror(endpoint: str | None = None) -> str:
-    """把 HF_ENDPOINT 写入进程环境，供 huggingface_hub / transformers 使用。
-
-    仍使用 Hub id（如 BAAI/bge-m3）拉取权重，但流量走镜像站而非 huggingface.co。
-    """
+    """写入 HF_ENDPOINT，供 huggingface_hub 走镜像。"""
     value = (endpoint or os.environ.get("HF_ENDPOINT") or DEFAULT_HF_ENDPOINT).strip()
     if value:
         os.environ["HF_ENDPOINT"] = value
@@ -116,6 +113,23 @@ class Settings(BaseSettings):
     CN_TAG_BM25_APPEND: int = 2
     RISK_ID_CAP: int = 3
     TAG_BACKFILL_TOP_CASES: int = 5
+
+    # ---- 任务2 动态 few-shot ----
+    # Excel/多标签库；缺失则退回纯规则。勿用评测金标切 train 建库。
+    FEWSHOT_ENABLED: bool = True
+    FEWSHOT_BANK_PATH: str = "data/fewshot/risk_tag_fewshot_bank_multilabel.jsonl"
+    FEWSHOT_MODE: str = "dynamic"  # dynamic | fixed
+    FEWSHOT_FIXED_IDS: str = "FS-M001,FS-M005,FS-M028"
+    FEWSHOT_RETRIEVER: str = "lexical"  # lexical | hybrid
+    FEWSHOT_TOP_N: int = 3
+    FEWSHOT_MIN_SCORE: float = 0.03
+    FEWSHOT_MMR_LAMBDA: float = 0.7
+    FEWSHOT_RARITY_BOOST: float = 0.15
+    FEWSHOT_DENSE_WEIGHT: float = 0.5
+    FEWSHOT_MAX_CHARS: int = 1800
+    FEWSHOT_MAX_BEHAVIOR_CHARS: int = 420
+    FEWSHOT_TAG_HINTS: bool = True
+    FEWSHOT_REQUIRE_COVERED_HINT: bool = True
 
     # ---- 抽取 / 解析 ----
     # llm_first：长文决定书/OCR 用提示词主抽，正则仅作无 LLM/失败兜底

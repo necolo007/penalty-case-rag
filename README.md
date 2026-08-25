@@ -10,10 +10,10 @@
 | 任务块 | 模块 | 说明 |
 |--------|------|------|
 | 任务1 文档解析与结构化抽取 | `pipeline/parser` + `pipeline/extraction` | PDF 分流；决定书/OCR：LLM 主抽长字段 + 文号/机关正则回填（`hybrid`）；公示表映射；`EXTRACTION_MODE=regex_first` 可回退 |
-| 任务2 保险筛选与标签归类 | `engine/classification` | 三维词典加权打分 + 三级风险标签（内外双轨 R001–R008） |
+| 任务2 保险筛选与标签归类 | `engine/classification` | 三维词典加权打分 + 三级风险标签（内外双轨 R001–R008）；27 类打标叠加动态 few-shot |
 | 任务3 相似案例检索（核心） | `engine/retrieval` | LLM 改写 + HyDE → BGE-M3（dense_raw/dense/dense_hyde + sparse）→ 余弦合并 → bge-reranker；`legacy_four_way` 可回滚 |
 | 任务4 合规审查与归因 | `engine/review` | 风险句定位（规则/词典/LLM 三重）+ 逐句检索 + 可追溯审查意见 |
-| 任务5 样本增强与金标导入 | `scripts/data_augmentation.py` 等 | 竞赛配套数据接入、金标入库、样本增强 |
+| 任务5 样本增强与金标导入 | `scripts/import_excel_fewshot_bank.py` + `engine/classification/fewshot.py` | 评测集外标签对齐摘录 few-shot；配套数据接入与金标入库见 `scripts/data_augmentation.py` |
 
 ## 技术栈
 
@@ -127,6 +127,11 @@ make web-build        # 或 cd web && npm run build
 - 启用精排：`pip/uv install -e ".[local-models]"`，并设 `RERANKER_DEVICE=cpu`（无 GPU）或 `cuda`
 - 向量重建（BGE-M3 dense+sparse）：`make reindex-embed`（文档侧为 `违规行为`+`案件总结`，不含 raw_text）
 - 任务3 查询改写：规范化行为描述 JSON（`normalized_violation`）；原文走 dense_raw，改写走 dense
+- **任务2 动态 few-shot**：默认 `data/fewshot/risk_tag_fewshot_bank_multilabel.jsonl`（多标签扩充库，TOP_N=3，`make fewshot-import-multilabel`）；旧单标签 Excel 仍可用 `make fewshot-import-excel`
+  - 打标时按待判事实检索相似行为片段注入 Prompt；`FEWSHOT_ENABLED=false` 或示例库缺失即退回纯规则
+  - **不要**再从评测金标切 train/dev/test 建库（会泄漏且池子过窄）；完整金标只用于评测
+  - 运维接口：`GET /api/v1/fewshot/stats`、`POST /api/v1/fewshot/preview`、`POST /api/v1/fewshot/reload`
+  - A/B：`make eval-task2-ab`（完整 `gold_task2_822_cleaned` × 无 few-shot / Excel few-shot）
 - 离线便宜评测（不对齐生产最优）：`make eval-cheap LIMIT=50`
 - 对齐生产一键评测：`make eval`（hybrid+LLM 标签 + 检索 rewrite/rerank/listwise）
 - 任务1 长字段默认 BERTScore：`pip install -e ".[eval]"` 后跑 `scripts/eval_extraction.py`（`--no-bert-score` 可回退字符重叠；默认 `HF_ENDPOINT=https://hf-mirror.com`）

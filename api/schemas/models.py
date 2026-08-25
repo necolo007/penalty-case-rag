@@ -114,3 +114,35 @@ class CasePatchRequest(BaseModel):
 
 class CaseExcludeRequest(BaseModel):
     reason: Optional[str] = None
+
+
+# ---------- 动态 few-shot（任务2 打标 / 任务5 长尾增强） ----------
+
+class FewShotPreviewRequest(BaseModel):
+    violation_behavior: str = Field(..., min_length=1, max_length=4000)
+    top_n: Optional[int] = Field(None, ge=1, le=12)
+    use_tag_hints: bool = True
+    exclude_case_ids: list[str] = Field(default_factory=list)
+    include_prompt: bool = Field(
+        False, description="返回最终注入 LLM 的完整 user prompt，便于口径核对",
+    )
+
+
+class FewShotExampleOut(BaseModel):
+    example_id: str
+    case_id: str
+    risk_tags: list[str]
+    violation_behavior: str
+    score: float
+    typicality: float
+    reason: str = Field("similar", description="similar=相似检索命中；tag_quota=长尾配额补位")
+    note: str = ""
+
+
+class FewShotPreviewResponse(BaseModel):
+    enabled: bool
+    bank: Optional[str] = None
+    tag_hints: list[str] = Field(default_factory=list)
+    examples: list[FewShotExampleOut] = Field(default_factory=list)
+    prompt_block: str = ""
+    user_prompt: Optional[str] = None

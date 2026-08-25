@@ -1,12 +1,17 @@
 """任务3：LLM-as-Judge 评测检索结果是否「合理相关」。
 
-读取已有 submission_*.jsonl + 查询文本，可选补全库内违法事实，对 Top-K 打 0/1（1=相关，0=不相关）。
-用于辅助诊断（金标噪声时）；不替代 MRR/Recall@K。
+读取已有 submission_*.jsonl + 查询文本，对 Top-K 打 0/1（1=相关，0=不相关），
+并汇总 Judge 口径的 MRR / Recall@K / NDCG@K / Top-1。
 
 用法：
   python scripts/eval_retrieval_judge.py \\
     --submission data/eval/submission_test_vb_summary_n30.jsonl \\
-    --top-k 5 --limit 30
+    --top-k 10 --limit 30
+
+  # 仅从已有 Judge 报告重算指标（不调 LLM）
+  python scripts/eval_retrieval_judge.py \\
+    --from-report data/eval/judge_test_vb_summary_n30_listwise_top5.json \\
+    --metrics-k 3 5 10
 
   # 对比多份提交
   python scripts/eval_retrieval_judge.py --compare \\
@@ -32,6 +37,11 @@ from core.config import get_settings
 from core.db import close_pool, create_pool
 from engine.llm.client import ThinkingMode, create_llm_client
 from engine.llm.prompts import RETRIEVAL_JUDGE_PROMPT
+
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from eval_metrics import DEFAULT_K_VALUES, compute_judge_retrieval_metrics
 
 logger = logging.getLogger(__name__)
 _JSON_BLOCK = re.compile(r"\{[\s\S]*\}")
@@ -151,6 +161,44 @@ def _cases_block(cases: list[dict], case_meta: dict[str, dict]) -> str:
             f"标签：{tag_s or '（无）'}"
         )
     return "\n\n".join(parts)
+
+
+def _attach_judge_metrics(
+    summary: dict,
+    per_query: list[dict],
+    k_values: list[int],
+    *,
+    graded_ndcg: bool = False,
+) -> dict:
+    """合并 Judge 口径的 Recall@K / NDCG@K / MRR / Top-1 等到 summary。"""
+    metrics = compute_judge_retrieval_metrics(
+        per_query,
+        k_values=k_values,
+        graded_ndcg=graded_ndcg,
+    )
+    for key, val in metrics.items():
+        if key == "per_query":
+            continue
+        summary[key] = val
+    summary["scoring_mode"] = "judge_graded_ndcg" if graded_ndcg else "judge_binary"
+    summary["metrics_note"] = (
+        "相关集来自 Judge 对已召回 Top-M 的标注；Recall@K 为 Judge 正例在 Top-K 的覆盖率"
+    )
+    return summary
+
+
+def _metrics_from_report(report_path: Path, k_values: list[int], graded: bool) -> dict:
+    data = json.loads(report_path.read_text(encoding="utf-8"))
+    per_query = data.get("per_query") or []
+    if not per_query:
+        raise SystemExit(f"报告中无 per_query: {report_path}")
+    summary = {
+        "evaluated": len(per_query),
+        "top_k": data.get("top_k"),
+        "submission": data.get("submission"),
+        "from_report": str(report_path),
+    }
+    return _attach_judge_metrics(summary, per_query, k_values, graded_ndcg=graded)
 
 
 def _agg(per_query: list[dict], top_k: int) -> dict:
@@ -287,6 +335,9 @@ async def judge_submission(
                 print(f"  [{submission_path.name}] {i}/{len(prepared)}", flush=True)
 
     summary = _agg(per_query, top_k)
+    summary = _attach_judge_metrics(
+        summary, per_query, k_values=DEFAULT_K_VALUES, graded_ndcg=False,
+    )
     # 金标未命中但 Judge 认为合理的比例
     gold_miss_but_ok = [
         q for q in per_query
@@ -302,21 +353,55 @@ async def judge_submission(
     payload = {k: v for k, v in summary.items() if k != "per_query"}
     payload["per_query"] = per_query
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    metrics_path = out_path.with_suffix(".metrics.json")
+    metrics_path.write_text(
+        json.dumps({k: v for k, v in payload.items() if k != "per_query"}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     print(
         f"Judge {submission_path.name}: n={summary['evaluated']} "
-        f"mean_rel={summary['mean_relevant_rate']} "
-        f"hit={summary['hit_any_relevant']} "
-        f"prec={summary['precision_relevant']} "
-        f"mrr={summary['mrr_relevant']} "
+        f"top1_hit={summary.get('top1_hit')} "
+        f"mrr={summary.get('mrr')} "
+        f"recall@5={summary.get('recall@5')} "
+        f"ndcg@5={summary.get('ndcg@5')} "
+        f"hit_any={summary['hit_any_relevant']} "
         f"gold_miss_but_ok={summary['gold_miss_but_judge_ok']}"
     )
     print(f"  report → {out_path}")
+    print(f"  metrics → {metrics_path}")
     print(f"  detail → {detail_path}")
     return summary
 
 
 async def main_async(args: argparse.Namespace) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    k_values = sorted(set(args.metrics_k or DEFAULT_K_VALUES))
+
+    if args.from_report:
+        report = Path(args.from_report)
+        if not report.is_absolute():
+            report = _ROOT / report
+        summary = _metrics_from_report(report, k_values, graded=args.graded_ndcg)
+        out = Path(args.output) if args.output else report.with_suffix(".metrics.json")
+        if not out.is_absolute():
+            out = _ROOT / out
+        out.write_text(
+            json.dumps({k: v for k, v in summary.items()}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"Judge metrics (from report) n={summary.get('evaluated')}")
+        for key in ["top1_hit", "mrr"]:
+            if key in summary:
+                print(f"  {key}: {summary[key]}")
+        for k in k_values:
+            for prefix in ("recall", "ndcg"):
+                mk = f"{prefix}@{k}"
+                if mk in summary:
+                    print(f"  {mk}: {summary[mk]}")
+        print(f"Metrics → {out}")
+        return
+
     questions = Path(args.questions)
     if not questions.is_absolute():
         questions = _ROOT / questions
@@ -379,9 +464,27 @@ def main() -> None:
         default="data/eval/quarantine/test_gold_labels.jsonl",
         help="可选金标，用于对照 gold_miss_but_judge_ok",
     )
-    p.add_argument("--top-k", type=int, default=5)
+    p.add_argument("--top-k", type=int, default=10,
+                   help="Judge 评分的召回条数；算 Recall@10 需至少 10")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--output", default=None, help="单提交时的报告路径")
+    p.add_argument(
+        "--from-report",
+        default=None,
+        help="从已有 Judge JSON 重算指标（不调 LLM）",
+    )
+    p.add_argument(
+        "--metrics-k",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Judge 指标 K 列表，默认 3 5 10",
+    )
+    p.add_argument(
+        "--graded-ndcg",
+        action="store_true",
+        help="NDCG 使用 Judge 0/1/2 分值（否则二值相关）",
+    )
     args = p.parse_args()
     asyncio.run(main_async(args))
 

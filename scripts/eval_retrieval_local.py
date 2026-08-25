@@ -35,7 +35,7 @@ from engine.retrieval.query_rewriter import QueryRewriter
 from engine.retrieval.reranker import NoopReranker, Reranker
 from engine.retrieval.risk_predictor import RiskPredictor
 from engine.retrieval.synonym_expander import SynonymExpander
-from eval_metrics import compute_retrieval_metrics
+from eval_metrics import DEFAULT_K_VALUES, compute_retrieval_metrics
 
 
 def _load_jsonl(path: Path) -> list[dict]:
@@ -307,14 +307,46 @@ async def main() -> None:
         for row in submission:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    metrics = compute_retrieval_metrics(submission, gold, k_values=[5, 10])
-    rep_out.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+    metrics = compute_retrieval_metrics(
+        submission, gold, k_values=DEFAULT_K_VALUES,
+    )
+    report = {
+        "task": "task3_retrieval",
+        "split": tag,
+        "config": {
+            "backend": backend,
+            "rerank": args.rerank,
+            "llm_rewrite": args.llm_rewrite,
+            "hyde": hyde_flag,
+            "dense_raw": dense_raw_flag,
+            "fusion_mode": settings.RETRIEVAL_FUSION_MODE,
+            "llm_listwise": settings.RETRIEVAL_LLM_LISTWISE,
+            "top_k_retrieved": args.top_k,
+            "limit": args.limit,
+        },
+        "submission": str(sub_out),
+        "gold": str(g_file),
+        **{k: v for k, v in metrics.items() if k != "per_query"},
+        "per_query": metrics.get("per_query", []),
+    }
+    metrics_path = sub_out.with_suffix(".metrics.json")
+    rep_out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    metrics_path.write_text(
+        json.dumps({k: v for k, v in report.items() if k != "per_query"}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     print(f"Evaluated: {metrics.get('evaluated')}")
-    for k, v in metrics.items():
-        if k not in ("evaluated", "per_query"):
-            print(f"  {k}: {v}")
+    for k in ["mrr", "top1_hit"]:
+        if k in report:
+            print(f"  {k}: {report[k]}")
+    for k in DEFAULT_K_VALUES:
+        for prefix in ("recall", "ndcg"):
+            key = f"{prefix}@{k}"
+            if key in report:
+                print(f"  {key}: {report[key]}")
     print(f"Submission → {sub_out}")
     print(f"Report → {rep_out}")
+    print(f"Metrics → {metrics_path}")
 
     await close_pool()
     await close_redis()

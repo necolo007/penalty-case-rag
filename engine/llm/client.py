@@ -1,8 +1,4 @@
-"""DeepSeek-V4-Flash 统一客户端。
-
-所有 LLM 任务（改写/抽取/分类/审查）共用本客户端，避免多 SDK 散落。
-一期默认 thinking=disabled，保证检索链路 P99 延迟可控。
-"""
+"""DeepSeek OpenAI 兼容客户端。"""
 
 import logging
 import time
@@ -21,13 +17,20 @@ class ThinkingMode(str, Enum):
 
 
 class DeepSeekClient:
-    """DeepSeek-V4-Flash 统一客户端（OpenAI SDK 兼容）"""
-
-    def __init__(self, api_key: str, base_url: str = "https://api.deepseek.com",
-                 model: str = "deepseek-v4-flash", max_retries: int = 3):
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
-        self.model = model
-        self.max_retries = max_retries
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str | None = None,
+        model: str | None = None,
+        max_retries: int | None = None,
+    ):
+        settings = get_settings()
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=base_url or settings.LLM_BASE_URL,
+        )
+        self.model = model or settings.LLM_MODEL
+        self.max_retries = max_retries if max_retries is not None else settings.LLM_MAX_RETRIES
 
     def complete(
         self,

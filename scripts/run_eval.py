@@ -22,9 +22,9 @@ _ROOT = Path(__file__).resolve().parents[1]
 T1_GOLD = "data/eval/gold_extraction_521_cleaned.jsonl"
 T1_EXTRACTED = "data/eval/extracted_cases_hybrid_521.jsonl"
 T1_REPORT = "data/eval/extraction_eval_hybrid_521_cleaned_bert.json"
-T2_GOLD = "data/eval/gold_task2_820_cleaned.jsonl"
-T2_PRED = "data/eval/predicted_risk_tags_820_llm.jsonl"
-T2_REPORT = "data/eval/label_eval_report_820_llm.json"
+T2_GOLD = "data/eval/gold_task2_822_cleaned.jsonl"
+T2_PRED = "data/eval/predicted_risk_tags_822_llm.jsonl"
+T2_REPORT = "data/eval/label_eval_report_822_llm.json"
 
 
 def _run(cmd: list[str]) -> None:
@@ -115,8 +115,8 @@ def main() -> None:
             candidates = [
                 _ROOT / f"data/eval/eval_report_{split}_vb_summary_n{args.retrieval_limit}_listwise.json",
                 _ROOT / f"data/eval/eval_report_{split}_rerank.json",
-                _ROOT / f"data/eval/eval_report_test_vb_summary_n30.json",
-                _ROOT / f"data/eval/eval_report_test_vb_summary_n30_listwise.metrics.json",
+                _ROOT / "data/eval/eval_report_test_vb_summary_n30.json",
+                _ROOT / "data/eval/eval_report_test_vb_summary_n30_listwise.metrics.json",
             ]
             report_path = next((p for p in candidates if p.exists()), None)
             if report_path is None:
@@ -170,8 +170,17 @@ def main() -> None:
         lines += ["## 任务3 检索", ""]
         for k, v in summary.items():
             if k.startswith("task3_") and isinstance(v, dict):
-                lines.append(f"- {k}: {json.dumps(v, ensure_ascii=False)[:200]}")
-        lines.append("")
+                lines.append(f"### {k}")
+                for mk in (
+                    "mrr", "top1_hit",
+                    "recall@3", "recall@5", "recall@10",
+                    "ndcg@3", "ndcg@5", "ndcg@10",
+                ):
+                    if mk in v:
+                        lines.append(f"- {mk}: **{v[mk]}**")
+                if v.get("evaluated"):
+                    lines.append(f"- evaluated: {v['evaluated']}")
+                lines.append("")
     lines += [
         "## 任务4 合规审查",
         "",

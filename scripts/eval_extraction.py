@@ -1,19 +1,10 @@
-"""字段抽取评测 CLI：对比 gold_extraction_cases.jsonl 计算字段级 P/R/F1。
+"""字段抽取评测：按 file_id 匹配后算 P/R/F1；长字段默认 BERTScore。
 
 用法：
   python scripts/eval_extraction.py \\
     --extracted data/eval/extracted_cases.jsonl \\
     --gold data/eval/gold_extraction_cases.jsonl
-
-  # 长字段默认 BERTScore（中文）；仅字符重叠：
   python scripts/eval_extraction.py ... --no-bert-score
-
-评测口径修正（六次优化，对齐《最新评测结果问题.md》#1/#2）：
-
-1. 多案例匹配：按 file_id 二分图最大权匹配后再计算 P/R/F1。
-2. 长字段评分：默认对 violation_behavior / penalty_content 使用 **BERTScore F1**
-   （bert-base-chinese），更贴近语义是否抽对；字符重叠 F1 仍写入
-   char_overlap_* 作对照。短字段保持精确匹配。
 """
 
 from __future__ import annotations

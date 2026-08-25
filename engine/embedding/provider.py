@@ -1,10 +1,4 @@
-"""Embedding Provider 统一抽象。
-
-设计要点：
-- 入库与检索必须使用同一模型（同一向量空间），case_embeddings.embedding_model 标记
-- 任务3默认：本地 FlagEmbedding BGE-M3（Hub id + HF_ENDPOINT 镜像）
-- cloud / local(BGE-large) 仅作 legacy 回滚；切换模型须全量 reindex
-"""
+"""Embedding Provider：入库与检索须同一模型；切换后需全量 reindex。"""
 
 import logging
 import time
@@ -15,10 +9,6 @@ from openai import OpenAI
 from core.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
-
-RETRIEVAL_INSTRUCT = (
-    "Given an insurance marketing claim, retrieve similar regulatory penalty cases"
-)
 
 _BATCH_SIZE = 10
 _MAX_RETRIES = 3
@@ -43,16 +33,21 @@ class BaseEmbeddingProvider(ABC):
 
 
 class CloudEmbeddingProvider(BaseEmbeddingProvider):
-    """Qwen text-embedding-v4 via OpenAI-compatible gateway"""
+    """云端 embedding（OpenAI 兼容网关）。"""
 
-    def __init__(self, api_key: str, base_url: str,
-                 model: str = "qwen-text-embedding-v4",
-                 instruct: str = RETRIEVAL_INSTRUCT,
-                 dimensions: int = 1024):
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        model: str | None = None,
+        instruct: str | None = None,
+        dimensions: int | None = None,
+    ):
+        settings = get_settings()
         self.client = OpenAI(api_key=api_key, base_url=base_url)
-        self.model = model
-        self.instruct = instruct
-        self.dimensions = dimensions
+        self.model = model or settings.EMBEDDING_MODEL or "qwen-text-embedding-v4"
+        self.instruct = instruct or settings.EMBEDDING_INSTRUCT
+        self.dimensions = dimensions if dimensions is not None else settings.EMBEDDING_DIMENSIONS
 
     def _batch_encode(self, texts: list[str], *, extra_body: dict | None = None) -> list[list[float]]:
         results: list[list[float]] = []
@@ -94,18 +89,19 @@ class CloudEmbeddingProvider(BaseEmbeddingProvider):
 
 
 class LocalEmbeddingProvider(BaseEmbeddingProvider):
-    """BAAI/bge-large-zh-v1.5 本地兜底。
-
-    注意：与云端模型不在同一向量空间，切换后必须全量重建 case_embeddings。
-    """
+    """本地 BGE-large；与云端不在同一向量空间，切换后需 reindex。"""
 
     _QUERY_INSTRUCTION = "为这个句子生成表示以用于检索相关文章："
 
-    def __init__(self, model: str = "BAAI/bge-large-zh-v1.5", device: str = "cpu"):
-        from sentence_transformers import SentenceTransformer  # 延迟导入，避免无 GPU 环境强依赖
+    def __init__(self, model: str | None = None, device: str | None = None):
+        from sentence_transformers import SentenceTransformer
 
-        self._model_name = model
-        self.model = SentenceTransformer(model, device=device)
+        settings = get_settings()
+        self._model_name = model or settings.EMBEDDING_MODEL_LOCAL
+        self.model = SentenceTransformer(
+            self._model_name,
+            device=device or settings.EMBEDDING_DEVICE,
+        )
 
     def encode_documents(self, texts: list[str]) -> list[list[float]]:
         return self.model.encode(texts, normalize_embeddings=True).tolist()

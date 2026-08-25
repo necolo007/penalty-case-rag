@@ -134,6 +134,8 @@ CN_TAG_ALIASES: dict[str, list[str]] = {
     "虚构/虚挂中介业务套取费用": ["虚列费用套取资金"],
     # 编制虚假财务资料 ≠ 虚列套取；无细类时归「其他」
     "编制虚假财务资料": ["其他"],
+    "编制虚假业务资料": ["其他"],
+    "编制虚假财务数据": ["其他"],
     "保险代理人侵害消费者权益": ["其他"],
     "利用开展保险业务牟取不正当利益": ["其他"],
     "销售违规": ["销售误导"],
@@ -206,6 +208,7 @@ _BUILTIN_CN_TAG_KEYWORDS: dict[str, list[str]] = {
     "虚列费用套取资金": ["虚列费用", "套取费用", "虚假列支", "虚挂中介"],
     "代理人管理不到位": [
         "代理人管理", "执业登记", "资格证书", "执业证书", "展业证", "未按规定进行执业",
+        "职业登记管理不规范", "对代理人培训不到位",
     ],
     "委托无资质机构销售": ["委托无资质", "无资质机构", r"委托.{0,20}(?:机构|公司|平台).{0,12}(?:销售|代理)"],
     "未按规定使用费率条款": ["费率条款", "未按规定使用", "擅自变更.*条款"],
@@ -405,7 +408,8 @@ _FICTIVE_YIELD_RE = re.compile(
     r"错误介绍.{0,12}收益|分红数值|共同分红率"
 )
 _DECEIVE_APPLICANT_RE = re.compile(
-    r"欺骗投保人|不履行.{0,30}如实告知|诱导投保人不履行"
+    r"欺骗投保人|欺骗被保险人|欺骗受益人|私印保单|隐瞒投保人|"
+    r"不履行.{0,30}如实告知|诱导投保人不履行"
 )
 _FAKE_STOP_SALE_RE = re.compile(
     r"即将停售|实际并未停售|从未停售|并未停售|以即将停售为由|"
@@ -423,16 +427,18 @@ _PERSON_UNLICENSED_RE = re.compile(
 _INST_UNLICENSED_RE = re.compile(
     r"委托.{0,40}(?:无资质|不具备资质|未取得.{0,16}资质).{0,24}"
     r"(?:机构|公司|平台).{0,20}(?:销售|代理)|"
-    r"与无资质的第三方"
+    r"与无资质的第三方|代理机构业务台账|台账要素不齐"
 )
-_TELESALES_RE = re.compile(r"电销|电话销售|电话营销")
+_TELESALES_RE = re.compile(r"电销|电话销售|电话营销|电话业务销售|销售录音")
 # 银行/存款名义卖保险 → 销售误导（含「存款赠送保险」等，勿只认「银行存款」四字）
 _BANK_MISLEAD_RE = re.compile(
     r"销售误导|错误解释保险责任|银行存款|储蓄计划|以银行.{0,8}名义|"
     r"存款赠送|存款送保险|以存款|像存款|存钱送|把保险当存款|"
+    r"换个地方存钱|换种方式存储|换个方式存储|"
     r"银行理财名义|以理财名义|混淆.{0,8}存款|"
     r"以(?:银行存款|银行理财|储蓄|理财).{0,12}(?:名义|形式).{0,20}(?:宣传|销售|介绍)|"
-    r"(?:购买保险|买保险|投保).{0,12}(?:宣传为|说成|称为).{0,8}(?:存钱|存款|储蓄)"
+    r"(?:购买保险|买保险|投保).{0,12}(?:宣传为|说成|称为).{0,8}(?:存钱|存款|储蓄)|"
+    r"片面.{0,12}(?:解释|介绍|说明).{0,12}(?:条款|责任)"
 )
 _FAKE_GIFT_RE = re.compile(r"虚假宣传赠送|宣传赠送.{0,24}并未|实际并未赠送|并未赠送")
 _REAL_EXTRA_INTEREST_RE = re.compile(
@@ -479,10 +485,21 @@ _PRODUCT_MEETING_RE = re.compile(r"产品说明会|产说会")
 _TRAINING_MATERIAL_RE = re.compile(
     r"培训(?:材料|课件|PPT|话术)|营销员培训|个险营销员培训|培训用.{0,8}课件"
 )
-_FAKE_EXPENSE_DETAIL_RE = re.compile(r"虚列|套取(?:费用|资金)|虚构.{0,12}费用")
-_FAKE_REPORT_ONLY_RE = re.compile(
-    r"业务财务数据不真实|编制提交虚假报表|编制虚假报表|营业费用核算不真实"
+_FAKE_EXPENSE_DETAIL_RE = re.compile(
+    r"虚列|虚构.{0,16}(?:费用|业务)|虚假列支|虚挂中介"
 )
+_SIPHON_OR_MISUSE_RE = re.compile(
+    r"套取(?:费用|资金)|贴补手续费|"
+    r"(?:用于|转入|支付|发放|拨付).{0,24}(?:手续费|奖励|返佣|补贴|福利|展业)|"
+    r"假发票|虚假报销|虚假赔案|与列支名目不符"
+)
+_FAKE_REPORT_ONLY_RE = re.compile(
+    r"营业费用核算不真实|费用列支不规范|会计记录不实|"
+    r"业务财务数据不真实|编制提交虚假报表|编制虚假报表|编制虚假财务资料|"
+    r"财务数据不真实|业务资料不真实"
+)
+_PROMISE_RATIO_RETURN_RE = re.compile(r"按比例返还保费|比例返还保费|承诺.{0,8}返还保费")
+_SELF_PRINT_FLYER_RE = re.compile(r"自印宣传单|自印.{0,6}宣传单")
 _STAFF_EXTRA_INTEREST_RE = re.compile(
     r"给予.{0,16}(?:工作人员|员工|营销员|代理人|保险机构).{0,24}"
     r"(?:合同外|约定以外|额外).{0,8}利益|"
@@ -509,6 +526,10 @@ def refine_cn_tags(tags: list[str] | None, violation_behavior: str = "") -> list
 
     if any(t in out for t in ("赠送利益", "回扣返佣")) and "合同外利益" not in out:
         out.insert(0, "合同外利益")
+
+    if blob and _PROMISE_RATIO_RETURN_RE.search(blob) and "合同外利益" in out:
+        # 承诺按比例返还保费 ≠ 给予投保人合同外利益（8.23 口径）
+        out = [t for t in out if t != "合同外利益"]
 
     if blob and _TELESALES_RE.search(blob):
         mislead_hit = bool(_BANK_MISLEAD_RE.search(blob))
@@ -556,10 +577,14 @@ def refine_cn_tags(tags: list[str] | None, violation_behavior: str = "") -> list
             out.append("培训材料违规")
         # 培训课件中的「虚假宣传」不是对客户的产品虚假宣传
         if "虚假宣传" in out and not re.search(
-            r"宣传单|海报|公众号|短视频|对外宣传|广告",
+            r"宣传单|海报|公众号|短视频|对外宣传|广告|自印",
             blob,
         ):
             out = [t for t in out if t != "虚假宣传"]
+
+    if blob and _SELF_PRINT_FLYER_RE.search(blob) and "虚假宣传" not in out:
+        if not _TRAINING_MATERIAL_RE.search(blob):
+            out.append("虚假宣传")
 
     person_unlicensed = bool(blob and _PERSON_UNLICENSED_RE.search(blob))
     inst_unlicensed = bool(blob and _INST_UNLICENSED_RE.search(blob))
@@ -581,7 +606,11 @@ def refine_cn_tags(tags: list[str] | None, violation_behavior: str = "") -> list
             out = [t for t in out if t != "夸大收益"]
 
     if blob and "虚列费用套取资金" in out:
-        if _FAKE_REPORT_ONLY_RE.search(blob) and not _FAKE_EXPENSE_DETAIL_RE.search(blob):
+        has_xulie = bool(_FAKE_EXPENSE_DETAIL_RE.search(blob))
+        has_misuse = bool(_SIPHON_OR_MISUSE_RE.search(blob))
+        accounting_only = bool(_FAKE_REPORT_ONLY_RE.search(blob)) and not (has_xulie and has_misuse)
+        xulie_without_misuse = has_xulie and not has_misuse
+        if accounting_only or xulie_without_misuse:
             out = [t for t in out if t != "虚列费用套取资金"]
             if "其他" not in out:
                 out.append("其他")

@@ -1,11 +1,4 @@
-"""LLM 查询改写器（强制前置）+ 可选 HyDE。
-
-- rewrite：口语 → 规范化行为描述（JSON normalized_violation；可关，仅同义词）
-- hyde：口语 → 假想违法事实（决定书语体，供 dense_hyde 通道）
-
-LLM 不可用时：rewrite 降级同义词；hyde 返回空串（跳过该通道）。
-改写结果供 dense 通道；原文由 dense_raw 单独编码，故不再强制拼接原文。
-"""
+"""查询改写 + 可选 HyDE；LLM 失败时改写降级同义词，HyDE 返回空串。"""
 
 from __future__ import annotations
 
@@ -15,6 +8,7 @@ import re
 
 from engine.llm.client import DeepSeekClient, ThinkingMode
 from engine.llm.prompts import HYDE_PROMPT, QUERY_REWRITE_PROMPT
+from core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +64,12 @@ class QueryRewriter:
     async def rewrite(self, query_text: str) -> str:
         if self.use_llm_rewrite and self.llm is not None:
             try:
+                # 示例里含 JSON 花括号，不能用 str.format
+                prompt = QUERY_REWRITE_PROMPT.replace("{query_text}", query_text)
                 rewritten = self.llm.complete(
-                    QUERY_REWRITE_PROMPT.format(query_text=query_text),
+                    prompt,
                     max_tokens=220,
-                    temperature=0.1,
+                    temperature=get_settings().LLM_TEMPERATURE,
                     thinking=ThinkingMode.DISABLED,
                 )
                 normalized = _parse_normalized_violation(rewritten)

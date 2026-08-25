@@ -25,7 +25,7 @@ from core.db import close_pool, create_pool
 from engine.llm.client import create_llm_client
 from engine.retrieval.base import SearchResult
 from engine.retrieval.llm_listwise import LlmListwiseReranker
-from eval_metrics import compute_retrieval_metrics
+from eval_metrics import DEFAULT_K_VALUES, compute_retrieval_metrics
 
 
 def _load_jsonl(path: Path) -> list[dict]:
@@ -151,7 +151,7 @@ async def main() -> None:
         for row in new_rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    metrics = compute_retrieval_metrics(new_rows, gold, k_values=[5, 10])
+    metrics = compute_retrieval_metrics(new_rows, gold, k_values=DEFAULT_K_VALUES)
     rep_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Submission → {out_path}")
     print(f"Metrics → {rep_path}")
