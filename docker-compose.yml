@@ -1,10 +1,7 @@
 services:
-  # PostgreSQL + pgvector + zhparser（见 Dockerfile.postgres）
+  # PostgreSQL + pgvector
   postgres:
-    build:
-      context: .
-      dockerfile: Dockerfile.postgres
-    image: penalty-case-rag-postgres:pg16-zhparser
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: penalty_kb
       POSTGRES_USER: kb_admin
@@ -58,28 +55,11 @@ services:
       - ./uploads:/app/uploads
       - ./data:/app/data
 
-  # 默认 OCR Worker（RapidOCR）；扫描件请用此服务，勿本机装 OCR
+  # OCR Worker（扫描件）；文字版 PDF 可本机 make worker
   worker:
     build:
       context: .
       dockerfile: Dockerfile.worker.ocr
-    env_file: .env
-    environment: *app_env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./uploads:/app/uploads
-      - ./data:/app/data
-
-  # 轻量 Worker（无 OCR，仅 pdfplumber）— docker compose --profile lite up -d worker-lite
-  worker-lite:
-    profiles: ["lite"]
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
     env_file: .env
     environment: *app_env
     depends_on:

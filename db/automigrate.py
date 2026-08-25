@@ -107,7 +107,8 @@ async def _ensure_text_search_config(conn: asyncpg.Connection) -> None:
     if settings.REQUIRE_ZHPARSER:
         raise RuntimeError(
             "REQUIRE_ZHPARSER=true but extension zhparser is not available. "
-            "Build postgres with: docker compose build postgres"
+            "Default bge_m3 does not need zhparser; set REQUIRE_ZHPARSER=false "
+            "or use a Postgres image that includes zhparser."
         )
 
     if parser is not None:
@@ -117,8 +118,8 @@ async def _ensure_text_search_config(conn: asyncpg.Connection) -> None:
         "CREATE TEXT SEARCH CONFIGURATION zhparser_config (COPY = pg_catalog.simple);"
     )
     logger.warning(
-        "zhparser not available; BM25 uses simple fallback. "
-        "Use Dockerfile.postgres or set REQUIRE_ZHPARSER=true to enforce zhparser."
+        "zhparser not available; legacy BM25 falls back to simple. "
+        "Default bge_m3 retrieval does not depend on zhparser."
     )
 
 

@@ -1,5 +1,5 @@
 .PHONY: install install-local-models db worker api test lint export \
-	docker-ocr-build docker-ocr-test docker-up docker-postgres-build docker-postgres-up \
+	docker-ocr-build docker-ocr-test docker-up docker-postgres-up \
 	link-data import-gold web-install web-dev web-build reindex-embed sync-dict \
 	eval eval-cheap eval-rerank eval-ab eval-all \
 	eval-task2-ab fewshot-import-excel fewshot-import-multilabel eval-task2-multilabel
@@ -107,9 +107,6 @@ eval-task2-multilabel: fewshot-import-multilabel
 
 docker-up:
 	docker compose up -d postgres redis api worker
-
-docker-postgres-build:
-	docker compose build postgres
 
 docker-postgres-up:
 	docker compose up -d postgres redis

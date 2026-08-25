@@ -15,11 +15,11 @@
 ## 技术栈
 
 - **API**：FastAPI + asyncpg + ARQ（Redis）
-- **存储**：PostgreSQL + pgvector（HNSW）+ sparse JSONB；zhparser 仅供 `legacy_four_way` BM25
+- **存储**：PostgreSQL + pgvector（HNSW）+ sparse JSONB（官方 `pgvector/pgvector:pg16`）
 - **LLM**：DeepSeek-V4-Flash（改写 / 抽取 / 分类 / 审查 / listwise）
 - **召回**：`BAAI/bge-m3` dense + sparse（默认）；云端 embedding 仅 legacy
 - **精排**：`bge-reranker-v2-m3` Cross-Encoder（可关）
-- **OCR**：仅 Docker Worker（RapidOCR ONNX）；勿本机安装 OCR
+- **OCR**：扫描件用 Docker OCR Worker（RapidOCR）；文字版可本机 `make worker`；勿本机装 OCR
 
 ## 快速启动
 
@@ -52,25 +52,19 @@ Web（React）：`http://localhost:8000/`（开发：`make web-dev` → Vite `:5
 
 | 服务 | 镜像 | 用途 |
 |------|------|------|
-| `postgres` | `Dockerfile.postgres` | pgvector + zhparser |
+| `postgres` | `pgvector/pgvector:pg16` | 案例库 + dense 向量 |
 | `redis` | `redis:7-alpine` | ARQ 队列 |
-| `worker` | `Dockerfile.worker.ocr` | 默认 OCR Worker（扫描件） |
-| `worker-lite` | `Dockerfile.worker` | `--profile lite`：无 OCR，仅 pdfplumber |
-| `api` | `Dockerfile.api` | 可选整栈容器；日常开发可本机 `make api` |
+| `worker` | `Dockerfile.worker.ocr` | 扫描件 OCR 入库 |
+| `api` | `Dockerfile.api` | 可选整栈；日常用本机 `make api` |
 
 ```bash
-docker compose up -d postgres redis worker   # 常用：库 + 队列 + OCR
-docker compose --profile lite up -d worker-lite
+docker compose up -d postgres redis          # 基础设施
+docker compose up -d --build worker          # 需要扫扫描件时再启
 docker compose run --rm worker python scripts/test_ocr.py
 ```
 
-Postgres 宿主机端口默认 **15432**（见 `PG_HOST_PORT`），Redis 默认 **6534**。  
-首次切到本仓库 Postgres 镜像若曾用过官方 pgvector，建议：
-
-```bash
-docker compose down -v
-docker compose up -d postgres redis
-```
+Postgres 宿主机端口默认 **15432**（`PG_HOST_PORT`），Redis 默认 **6534**。  
+若曾用过自建 zhparser 镜像，切到官方 pgvector 时可重建卷：`docker compose down -v && docker compose up -d postgres redis`。
 
 ## 开发要点
 
