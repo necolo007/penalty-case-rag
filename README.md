@@ -13,7 +13,7 @@
 | 任务2 保险筛选与标签归类 | `engine/classification` | 三维词典加权打分 + 三级风险标签（内外双轨 R001–R008）；27 类打标叠加动态 few-shot |
 | 任务3 相似案例检索（核心） | `engine/retrieval` | LLM 改写 + HyDE → BGE-M3（dense_raw/dense/dense_hyde + sparse）→ 余弦合并 → bge-reranker；`legacy_four_way` 可回滚 |
 | 任务4 合规审查与归因 | `engine/review` | 风险句定位（规则/词典/LLM 三重）+ 逐句检索 + 可追溯审查意见 |
-| 任务5 样本增强与金标导入 | `scripts/import_excel_fewshot_bank.py` + `engine/classification/fewshot.py` | 评测集外标签对齐摘录 few-shot；配套数据接入与金标入库见 `scripts/data_augmentation.py` |
+| 任务5 样本增强与金标导入 | `scripts/import_excel_fewshot_bank.py` + `engine/classification/fewshot.py`；提示词规范消融 `scripts/eval_task5_prompt_ab.py` | 评测集外 few-shot；裸标签列表 vs 判定标准提示词 A/B（见 `data/eval/task5_prompt_ablation.md`） |
 
 ## 技术栈
 

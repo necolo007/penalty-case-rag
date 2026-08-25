@@ -20,13 +20,3 @@ def test_sparse_upsert_replace():
     idx.upsert("a", {"误导": 2.0})
     assert idx.search({"保险": 1.0}, 5) == []
     assert idx.search({"误导": 1.0}, 5)[0] == ("a", 2.0)
-
-
-def test_m3_rrf_weights_defaults():
-    from core.config import Settings
-
-    s = Settings()
-    w = s.m3_rrf_channel_weights()
-    assert set(w) >= {"dense", "dense_raw", "sparse"}
-    assert w["dense"] >= 0
-    assert w["sparse"] >= 0

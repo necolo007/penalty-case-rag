@@ -1,0 +1,280 @@
+{
+  "evaluated": 481,
+  "tagging_mode": "llm_cn",
+  "prompt_style": "bare",
+  "llm_fail": 0,
+  "gold": "D:\\code\\Drafter\\penalty-case-rag\\data\\eval\\gold_task2_822_cleaned.jsonl",
+  "fewshot": {
+    "enabled": false,
+    "reason": "--no-fewshot"
+  },
+  "risk_tags": {
+    "label_accuracy": 0.4802,
+    "label_exact_match_accuracy": 0.4802,
+    "label_partial_hit_rate": 0.9813,
+    "label_mean_jaccard": 0.7538,
+    "macro_f1": 0.7589,
+    "competition_id_macro_f1": 0.8677,
+    "competition_id_precision": 0.8385,
+    "competition_id_recall": 0.8991,
+    "per_tag": {
+      "欺骗投保人": {
+        "precision": 0.9924,
+        "recall": 0.9357,
+        "f1": 0.9632,
+        "tp": 131,
+        "fp": 1,
+        "fn": 9
+      },
+      "销售误导": {
+        "precision": 0.4397,
+        "recall": 0.9841,
+        "f1": 0.6078,
+        "tp": 62,
+        "fp": 79,
+        "fn": 1
+      },
+      "夸大收益": {
+        "precision": 0.6308,
+        "recall": 0.8723,
+        "f1": 0.7321,
+        "tp": 41,
+        "fp": 24,
+        "fn": 6
+      },
+      "虚假宣传": {
+        "precision": 0.6486,
+        "recall": 0.8571,
+        "f1": 0.7385,
+        "tp": 48,
+        "fp": 26,
+        "fn": 8
+      },
+      "合同外利益": {
+        "precision": 0.9318,
+        "recall": 0.988,
+        "f1": 0.9591,
+        "tp": 164,
+        "fp": 12,
+        "fn": 2
+      },
+      "赠送利益": {
+        "precision": 0.7179,
+        "recall": 0.7778,
+        "f1": 0.7467,
+        "tp": 28,
+        "fp": 11,
+        "fn": 8
+      },
+      "回扣返佣": {
+        "precision": 0.95,
+        "recall": 0.7755,
+        "f1": 0.8539,
+        "tp": 38,
+        "fp": 2,
+        "fn": 11
+      },
+      "产品说明会违规": {
+        "precision": 0.9286,
+        "recall": 0.975,
+        "f1": 0.9512,
+        "tp": 39,
+        "fp": 3,
+        "fn": 1
+      },
+      "培训材料违规": {
+        "precision": 0.5758,
+        "recall": 0.9048,
+        "f1": 0.7037,
+        "tp": 19,
+        "fp": 14,
+        "fn": 2
+      },
+      "回访违规": {
+        "precision": 0.6923,
+        "recall": 0.9474,
+        "f1": 0.8,
+        "tp": 18,
+        "fp": 8,
+        "fn": 1
+      },
+      "电销违规": {
+        "precision": 0.95,
+        "recall": 1.0,
+        "f1": 0.9744,
+        "tp": 76,
+        "fp": 4,
+        "fn": 0
+      },
+      "不当比较": {
+        "precision": 0.7143,
+        "recall": 0.9375,
+        "f1": 0.8108,
+        "tp": 15,
+        "fp": 6,
+        "fn": 1
+      },
+      "贬低竞品": {
+        "precision": 0.5,
+        "recall": 1.0,
+        "f1": 0.6667,
+        "tp": 1,
+        "fp": 1,
+        "fn": 0
+      },
+      "绝对化表述": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0
+      },
+      "承诺收益": {
+        "precision": 0.3846,
+        "recall": 0.9091,
+        "f1": 0.5405,
+        "tp": 20,
+        "fp": 32,
+        "fn": 2
+      },
+      "保证收益": {
+        "precision": 0.6,
+        "recall": 0.7895,
+        "f1": 0.6818,
+        "tp": 15,
+        "fp": 10,
+        "fn": 4
+      },
+      "弱化风险提示": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "tp": 0,
+        "fp": 0,
+        "fn": 1
+      },
+      "隐瞒重要信息": {
+        "precision": 0.4021,
+        "recall": 1.0,
+        "f1": 0.5735,
+        "tp": 39,
+        "fp": 58,
+        "fn": 0
+      },
+      "虚构收益率": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0
+      },
+      "诱导投保": {
+        "precision": 0.6122,
+        "recall": 0.75,
+        "f1": 0.6742,
+        "tp": 30,
+        "fp": 19,
+        "fn": 10
+      },
+      "避债避税": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 2,
+        "fp": 0,
+        "fn": 0
+      },
+      "虚列费用套取资金": {
+        "precision": 0.7835,
+        "recall": 0.8172,
+        "f1": 0.8,
+        "tp": 76,
+        "fp": 21,
+        "fn": 17
+      },
+      "代理人管理不到位": {
+        "precision": 0.6567,
+        "recall": 0.8462,
+        "f1": 0.7395,
+        "tp": 44,
+        "fp": 23,
+        "fn": 8
+      },
+      "委托无资质机构销售": {
+        "precision": 0.4118,
+        "recall": 0.7778,
+        "f1": 0.5385,
+        "tp": 7,
+        "fp": 10,
+        "fn": 2
+      },
+      "未按规定使用费率条款": {
+        "precision": 0.8364,
+        "recall": 0.9787,
+        "f1": 0.902,
+        "tp": 46,
+        "fp": 9,
+        "fn": 1
+      },
+      "客户信息不真实": {
+        "precision": 0.8333,
+        "recall": 0.7143,
+        "f1": 0.7692,
+        "tp": 15,
+        "fp": 3,
+        "fn": 6
+      },
+      "其他": {
+        "precision": 0.8807,
+        "recall": 0.6713,
+        "f1": 0.7619,
+        "tp": 96,
+        "fp": 13,
+        "fn": 47
+      }
+    }
+  },
+  "keywords": {
+    "precision": 0.9701,
+    "recall": 0.9827,
+    "f1": 0.9764,
+    "tp": 682,
+    "fp": 21,
+    "fn": 12,
+    "cases_with_any_keyword": 380,
+    "note": "预测/金标标签各自词典关键词中、实际出现在 violation_behavior 的词集合 F1"
+  },
+  "case_summary": {
+    "n_scored": 477,
+    "empty_pred": 1,
+    "skipped_empty_gold": 0,
+    "unmatched_gold": 4,
+    "note": "仅对 file_id/当事人匹配成功的金标–预测对计摘要分；未匹配金标不计入分母",
+    "char_overlap_precision": 0.8162,
+    "char_overlap_recall": 0.7828,
+    "char_overlap_f1": 0.7857,
+    "precision": 0.8162,
+    "recall": 0.7828,
+    "f1": 0.7857,
+    "scoring": "char_overlap",
+    "matched_pairs": 477,
+    "gold_cases": 481,
+    "pred_cases": 481,
+    "extracted": "D:\\code\\Drafter\\penalty-case-rag\\data\\eval\\extracted_cases_hybrid_521.jsonl"
+  },
+  "manual_spot_check": {
+    "note": "赛题「人工抽查」不自动打分；可抽查摘要噪声与标签合理性",
+    "suggested_sample_size": 30
+  },
+  "label_exact_match_accuracy": 0.4802,
+  "label_partial_hit_rate": 0.9813,
+  "label_mean_jaccard": 0.7538,
+  "macro_f1": 0.7589,
+  "competition_id_macro_f1": 0.8677,
+  "competition_id_precision": 0.8385,
+  "competition_id_recall": 0.8991,
+  "note": "任务2：风险标签 + 关键词 +（可选）案例摘要 BERTScore",
+  "predictions_out": "D:\\code\\Drafter\\penalty-case-rag\\data\\eval\\predicted_task5_prompt_bare.jsonl"
+}

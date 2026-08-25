@@ -6,7 +6,6 @@ import asyncio
 import logging
 import time
 
-from core.config import get_settings
 from engine.classification.competition_label_map import (
     cn_tags_to_competition_ids,
     predict_cn_tags_by_keywords,
@@ -15,7 +14,6 @@ from engine.classification.competition_label_map import (
 from engine.embedding.cache import CachedQueryEncoder
 from engine.retrieval.base import RetrievalResponse, SearchQuery, SearchResult
 from engine.retrieval.match_reason import build_match_reason
-from engine.retrieval.merger import reciprocal_rank_fusion
 from engine.retrieval.query_rewriter import QueryRewriter
 from engine.retrieval.reranker import Reranker
 from engine.retrieval.risk_predictor import RiskPredictor
@@ -39,17 +37,12 @@ class M3HybridRetriever:
         reranker: Reranker,
         fusion_size: int = 120,
         rerank_candidates: int = 80,
-        channel_weights: dict[str, float] | None = None,
-        rrf_k: int = 60,
-        multi_channel_bonus: float = 0.05,
         cn_tag_predict_max: int = 3,
         cn_tag_final_max: int = 5,
         risk_id_cap: int = 3,
         tag_backfill_top_cases: int = 5,
         enable_hyde: bool = False,
-        hyde_rerank: bool = False,
         enable_dense_raw: bool = True,
-        fusion_mode: str = "max_merge",
         llm_listwise=None,
     ):
         self.dense = dense
@@ -60,20 +53,15 @@ class M3HybridRetriever:
         self.reranker = reranker
         self.fusion_size = fusion_size
         self.rerank_candidates = rerank_candidates
-        self.channel_weights = channel_weights or get_settings().m3_rrf_channel_weights()
-        self.rrf_k = rrf_k
-        self.multi_channel_bonus = multi_channel_bonus
         self.cn_tag_predict_max = cn_tag_predict_max
         self.cn_tag_final_max = cn_tag_final_max
         self.risk_id_cap = risk_id_cap
         self.tag_backfill_top_cases = tag_backfill_top_cases
         self.enable_hyde = enable_hyde
-        self.hyde_rerank = hyde_rerank
         self.enable_dense_raw = enable_dense_raw
-        self.fusion_mode = (fusion_mode or "max_merge").strip().lower()
         self.llm_listwise = llm_listwise
 
-    def _fuse_max_merge(
+    def fuse_channels(
         self, channel_results: dict[str, list[SearchResult]],
     ) -> list[SearchResult]:
         """dense 族按余弦分 max 合并，sparse 仅补位。"""
@@ -118,51 +106,6 @@ class M3HybridRetriever:
             seen.add(r.case_id)
             sparse_bonus -= 1
         return fused[: self.fusion_size]
-
-    def _fuse_weighted_rrf(
-        self, channel_results: dict[str, list[SearchResult]],
-    ) -> list[SearchResult]:
-        """多路加权 RRF（dense_raw / dense / dense_hyde / sparse）。"""
-        # 恢复通道名便于权重查找（dense_raw 结果 channels 可能被标成 dense）
-        named: dict[str, list[SearchResult]] = {}
-        for ch, rows in channel_results.items():
-            if not rows:
-                continue
-            # 复制 channels 标记，避免污染原对象展示
-            copied: list[SearchResult] = []
-            for r in rows:
-                rr = SearchResult(
-                    case_id=r.case_id,
-                    party_name=r.party_name,
-                    violation_behavior=r.violation_behavior,
-                    penalty_content=r.penalty_content,
-                    regulator=r.regulator,
-                    risk_tags=list(r.risk_tags or []),
-                    score=r.score,
-                    penalty_doc_no=r.penalty_doc_no,
-                    risk_type_ids=list(r.risk_type_ids or []),
-                    match_reason=r.match_reason,
-                    source_file=r.source_file,
-                    channels=[ch],
-                    highlight_fields=dict(r.highlight_fields or {}),
-                )
-                copied.append(rr)
-            named[ch] = copied
-
-        return reciprocal_rank_fusion(
-            named,
-            k=self.rrf_k,
-            top_k=self.fusion_size,
-            weights=self.channel_weights,
-            multi_channel_bonus=self.multi_channel_bonus,
-        )
-
-    def fuse_channels(
-        self, channel_results: dict[str, list[SearchResult]],
-    ) -> list[SearchResult]:
-        if self.fusion_mode in ("weighted_rrf", "rrf"):
-            return self._fuse_weighted_rrf(channel_results)
-        return self._fuse_max_merge(channel_results)
 
     async def retrieve(self, query: SearchQuery) -> RetrievalResponse:
         started = time.perf_counter()
@@ -226,12 +169,10 @@ class M3HybridRetriever:
 
         if query.use_reranker:
             candidates = fused[: self.rerank_candidates]
-            aux = hyde_text if (self.hyde_rerank and hyde_text) else None
             top = await self.reranker.rerank(
                 query.query_text,
                 candidates,
                 top_k=query.top_k,
-                aux_query_text=aux,
             )
         else:
             top = fused[: query.top_k]

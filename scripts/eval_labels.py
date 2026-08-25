@@ -80,6 +80,7 @@ def _llm_predict_cn_tags(
     exclude_case_ids: list[str] | None = None,
     fewshot_mode: str | None = None,
     fewshot_fixed_ids: str | None = None,
+    prompt_style: str | None = None,
 ) -> list[str]:
     """用中文 27 类提示词直接预测 risk_tags（与入库 RiskTagger 共用）。"""
     return predict_cn_tags_with_llm(
@@ -90,6 +91,7 @@ def _llm_predict_cn_tags(
         exclude_case_ids=exclude_case_ids,
         fewshot_mode=fewshot_mode,
         fewshot_fixed_ids=fewshot_fixed_ids,
+        prompt_style=prompt_style,
     )
 
 
@@ -362,6 +364,12 @@ async def main() -> None:
         default=None,
         help="固定样本 ID，逗号分隔（默认跟随 FEWSHOT_FIXED_IDS）",
     )
+    parser.add_argument(
+        "--prompt-style",
+        default="full",
+        choices=["full", "bare"],
+        help="full=规范判定标准提示词；bare=仅标签列表（任务五消融）",
+    )
     args = parser.parse_args()
 
     gold_path = Path(args.gold)
@@ -467,6 +475,7 @@ async def main() -> None:
                         exclude_case_ids=[case_id] if case_id else None,
                         fewshot_mode=args.fewshot_mode,
                         fewshot_fixed_ids=args.fewshot_fixed_ids,
+                        prompt_style=args.prompt_style,
                     )
                     method = "llm_cn"
                 except Exception:  # noqa: BLE001
@@ -583,6 +592,7 @@ async def main() -> None:
     report: dict[str, Any] = {
         "evaluated": len(rows),
         "tagging_mode": "llm_cn" if args.with_llm else "rule_cn_dict",
+        "prompt_style": getattr(args, "prompt_style", "full"),
         "llm_fail": llm_fail if args.with_llm else 0,
         "gold": str(gold_path),
         "fewshot": (
@@ -667,6 +677,7 @@ async def main() -> None:
     summary = {
         "evaluated": report["evaluated"],
         "tagging_mode": report.get("tagging_mode"),
+        "prompt_style": report.get("prompt_style"),
         "fewshot": report.get("fewshot", {}).get("enabled"),
         "label_accuracy": report["risk_tags"]["label_accuracy"],
         "macro_f1": report["macro_f1"],

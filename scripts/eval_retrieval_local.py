@@ -170,14 +170,6 @@ async def main() -> None:
     parser.add_argument("--backend", default=None,
                         help="检索后端：bge_m3 | legacy_four_way（默认读 Settings）")
     parser.add_argument(
-        "--fusion-mode", default=None,
-        help="融合模式：max_merge | weighted_rrf（默认读 Settings.RETRIEVAL_FUSION_MODE）",
-    )
-    parser.add_argument(
-        "--rrf-w-raw", type=float, default=None,
-        help="weighted_rrf 时 dense_raw 权重；dense=1-w（与 --fusion-mode 联用）",
-    )
-    parser.add_argument(
         "--llm-listwise", action="store_true",
         help="CE 后对 Top-K 做 LLM 列表重排+减枝",
     )
@@ -235,19 +227,9 @@ async def main() -> None:
     suffix += f"_{backend.replace('-', '_')}"
 
     settings = get_settings()
-    if args.fusion_mode:
-        settings.RETRIEVAL_FUSION_MODE = args.fusion_mode
-    if args.rrf_w_raw is not None:
-        pair = settings.with_raw_rewrite_rrf_pair(args.rrf_w_raw)
-        settings.RRF_W_DENSE_RAW = pair["dense_raw"]
-        settings.RRF_W_DENSE = pair["dense"]
-        if args.fusion_mode is None:
-            settings.RETRIEVAL_FUSION_MODE = "weighted_rrf"
     if args.llm_listwise:
         settings.RETRIEVAL_LLM_LISTWISE = True
         suffix += "_listwise"
-    if (settings.RETRIEVAL_FUSION_MODE or "").lower() in ("weighted_rrf", "rrf"):
-        suffix += f"_rrf_raw{settings.RRF_W_DENSE_RAW:.2f}"
 
     sub_out = Path(args.submission_out or f"data/eval/submission_{tag}_{suffix}.jsonl")
     rep_out = Path(args.report_out or f"data/eval/eval_report_{tag}_{suffix}.json")
@@ -270,9 +252,7 @@ async def main() -> None:
         f"split={tag} n={len(questions)} backend={backend} "
         f"rerank={args.rerank} llm_rewrite={args.llm_rewrite} "
         f"hyde={hyde_flag} dense_raw={dense_raw_flag} "
-        f"fusion={settings.RETRIEVAL_FUSION_MODE} "
-        f"w_raw={settings.RRF_W_DENSE_RAW} w_rw={settings.RRF_W_DENSE} "
-        f"listwise={settings.RETRIEVAL_LLM_LISTWISE} top_k={args.top_k}"
+        f"fusion=max_merge listwise={settings.RETRIEVAL_LLM_LISTWISE} top_k={args.top_k}"
     )
     retriever = await build_retriever(
         use_rerank=args.rerank, use_llm_rewrite=args.llm_rewrite,
@@ -319,7 +299,7 @@ async def main() -> None:
             "llm_rewrite": args.llm_rewrite,
             "hyde": hyde_flag,
             "dense_raw": dense_raw_flag,
-            "fusion_mode": settings.RETRIEVAL_FUSION_MODE,
+            "fusion_mode": "max_merge",
             "llm_listwise": settings.RETRIEVAL_LLM_LISTWISE,
             "top_k_retrieved": args.top_k,
             "limit": args.limit,

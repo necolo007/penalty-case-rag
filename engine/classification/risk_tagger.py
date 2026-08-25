@@ -17,9 +17,7 @@ from typing import Any
 import asyncpg
 
 from engine.classification.competition_label_map import (
-    CANONICAL_CN_TAGS,
     cn_tags_to_competition_ids,
-    format_cn_tag_guide_for_prompt,
     normalize_cn_tags,
     predict_cn_tags_by_keywords,
     refine_cn_tags,
@@ -30,6 +28,7 @@ from engine.llm.client import DeepSeekClient, ThinkingMode
 from engine.llm.prompts import (
     RISK_CN_FEWSHOT_SECTION,
     RISK_CN_SYSTEM_PROMPT,
+    RISK_CN_SYSTEM_PROMPT_BARE,
     RISK_CN_USER_PROMPT,
     RISK_TAG_PROMPT,
 )
@@ -45,6 +44,19 @@ def _parse_json_obj(raw: str) -> dict:
     return json.loads(text)
 
 
+def build_cn_tag_system_prompt(*, prompt_style: str | None = None) -> str:
+    """任务2 打标 SYSTEM。
+
+    prompt_style:
+      - full（默认）：规范总则 + 标签列表 + 判定规则/消歧
+      - bare：仅标签列表（任务五消融基线）
+    """
+    style = (prompt_style or "full").strip().lower()
+    if style in ("bare", "minimal", "list_only"):
+        return RISK_CN_SYSTEM_PROMPT_BARE
+    return RISK_CN_SYSTEM_PROMPT
+
+
 def build_cn_tag_user_prompt(
     violation_behavior: str,
     *,
@@ -54,7 +66,7 @@ def build_cn_tag_user_prompt(
     fewshot_mode: str | None = None,
     fewshot_fixed_ids: str | None = None,
 ) -> str:
-    """组装 27 类打标 user prompt；few-shot 段为空时不留空标题。"""
+    """组装 27 类打标 user prompt：仅 few-shot（可选）+ 待判事实。"""
     from core.config import get_settings
 
     settings = get_settings()
@@ -82,11 +94,9 @@ def build_cn_tag_user_prompt(
             fixed_ids=fewshot_fixed_ids,
         )
         if examples:
-            block = "\n" + RISK_CN_FEWSHOT_SECTION.format(examples=examples)
+            block = RISK_CN_FEWSHOT_SECTION.format(examples=examples) + "\n"
 
     return RISK_CN_USER_PROMPT.format(
-        tag_list="、".join(CANONICAL_CN_TAGS),
-        tag_guide=format_cn_tag_guide_for_prompt(max_chars=2800),
         fewshot_block=block,
         violation_behavior=text[:3500],
     )
@@ -101,6 +111,7 @@ def predict_cn_tags_with_llm(
     exclude_case_ids: Iterable[str] | None = None,
     fewshot_mode: str | None = None,
     fewshot_fixed_ids: str | None = None,
+    prompt_style: str | None = None,
 ) -> list[str]:
     """中文 27 类打标（评测 --with-llm / 入库 RiskTagger 共用，含 refine + 标签上限）。"""
     from core.config import get_settings
@@ -117,7 +128,7 @@ def predict_cn_tags_with_llm(
             fewshot_mode=fewshot_mode,
             fewshot_fixed_ids=fewshot_fixed_ids,
         ),
-        system=RISK_CN_SYSTEM_PROMPT,
+        system=build_cn_tag_system_prompt(prompt_style=prompt_style),
         max_tokens=400,
         temperature=0.1,
         json_mode=True,

@@ -184,25 +184,19 @@ async def main() -> None:
             if ids & relevant:
                 channel_hit[ch] += 1
 
-        fused = reciprocal_rank_fusion(
-            {
-                k: v for k, v in channel_results.items()
-                if k in ("dense_raw", "dense", "dense_hyde")
-            }
-            if not is_legacy else channel_results,
-            k=retriever.rrf_k, top_k=args.fusion_top,
-            weights=retriever.channel_weights, multi_channel_bonus=retriever.multi_channel_bonus,
-        )
-        # 与线上一致：sparse 仅补位
-        if not is_legacy:
-            seen = {r.case_id for r in fused}
-            for r in channel_results.get("sparse", []):
-                if r.case_id in seen:
-                    continue
-                if len(fused) >= args.fusion_top:
-                    break
-                fused.append(r)
-                seen.add(r.case_id)
+        if is_legacy:
+            fused = reciprocal_rank_fusion(
+                channel_results,
+                k=retriever.rrf_k,
+                top_k=args.fusion_top,
+                weights=retriever.channel_weights,
+                multi_channel_bonus=retriever.multi_channel_bonus,
+            )
+        else:
+            old_size = retriever.fusion_size
+            retriever.fusion_size = args.fusion_top
+            fused = retriever.fuse_channels(channel_results)
+            retriever.fusion_size = old_size
         if {r.case_id for r in fused} & relevant:
             fused_hit += 1
 
@@ -213,7 +207,8 @@ async def main() -> None:
         f"\n=== split={args.split} backend={backend} n={n}"
         f"（跳过无金标 {no_gold} 条）llm_rewrite={args.llm_rewrite} ==="
     )
-    print(f"RRF Top-{args.fusion_top} 命中金标比例: {fused_hit / n:.2%}" if n else "n=0")
+    fuse_name = "RRF" if is_legacy else "max_merge"
+    print(f"{fuse_name} Top-{args.fusion_top} 命中金标比例: {fused_hit / n:.2%}" if n else "n=0")
     print("\n各通道自身候选中包含金标案例的比例：")
     for ch in channels:
         if n:

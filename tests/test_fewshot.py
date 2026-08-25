@@ -171,12 +171,24 @@ def test_user_prompt_injects_examples_and_discipline(bank):
     assert "[例1]" in prompt
 
 
-def test_user_prompt_without_fewshot_has_no_example_section(bank):
+def test_bare_system_prompt_has_no_tag_rules():
+    from engine.classification.risk_tagger import build_cn_tag_system_prompt
+
+    bare = build_cn_tag_system_prompt(prompt_style="bare")
+    full = build_cn_tag_system_prompt(prompt_style="full")
+    assert "可选标签" in bare
+    assert "标签规则" not in bare
+    assert "虚列费用套取资金" in bare
+    assert "标签规则" in full
+    assert len(full) > len(bare)
+
     prompt = build_cn_tag_user_prompt(
         "电话销售中以停售为由宣传并夸大收益", fewshot=False, fewshot_bank=bank
     )
     assert "相似判例参考" not in prompt
-    assert "可选风险标签" in prompt
+    assert "违法违规行为" in prompt
+    assert "标签消歧" not in prompt
+    assert "可选风险标签" not in prompt
 
 
 def test_fixed_fewshot_always_injects_same_examples(bank):

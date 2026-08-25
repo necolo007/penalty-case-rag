@@ -74,12 +74,8 @@ class Settings(BaseSettings):
     RETRIEVAL_BACKEND: str = "bge_m3"
     # HyDE：LLM 生成假想违法事实再 dense 召回（需可用 LLM；无 Key 时自动跳过）
     RETRIEVAL_HYDE_ENABLED: bool = True
-    # HyDE 文本参与 CE：与口语 query 双路打分取 max（test n15 上劣化，默认关）
-    RETRIEVAL_HYDE_RERANK: bool = False
     # dense_raw：原文口语 dense 通道；关闭则仅用改写（+可选 HyDE）做消融
     RETRIEVAL_DENSE_RAW_ENABLED: bool = True
-    # 融合：max_merge=dense 族余弦取 max（默认）；weighted_rrf=多路加权 RRF
-    RETRIEVAL_FUSION_MODE: str = "max_merge"
     # CE 后对 Top-K 做 LLM 列表重排+减枝（与任务3 Judge 最优配置对齐；无 Key 时 assemble 自动跳过）
     RETRIEVAL_LLM_LISTWISE: bool = True
     RETRIEVAL_LLM_LISTWISE_KEEP_MIN: int = 3
@@ -101,11 +97,6 @@ class Settings(BaseSettings):
     RRF_W_VECTOR: float = 1.45
     RRF_W_TAG: float = 1.0
     RRF_W_RULE: float = 1.2
-    # weighted_rrf 下建议 dense_raw + dense = 1（如 0.4/0.6）；max_merge 时权重不生效
-    RRF_W_DENSE: float = 0.6
-    RRF_W_DENSE_RAW: float = 0.4
-    RRF_W_DENSE_HYDE: float = 0.35
-    RRF_W_SPARSE: float = 0.2
     RRF_MULTI_CHANNEL_BONUS: float = 0.05
     CN_TAG_PREDICT_MAX: int = 3
     CN_TAG_FINAL_MAX: int = 5
@@ -160,23 +151,6 @@ class Settings(BaseSettings):
             "tag": self.RRF_W_TAG,
             "rule": self.RRF_W_RULE,
         }
-
-    def m3_rrf_channel_weights(self) -> dict[str, float]:
-        """bge_m3：原文 dense / 改写 dense / HyDE dense / sparse。"""
-        return {
-            "dense_raw": self.RRF_W_DENSE_RAW,
-            "dense": self.RRF_W_DENSE,
-            "dense_hyde": self.RRF_W_DENSE_HYDE,
-            "sparse": self.RRF_W_SPARSE,
-        }
-
-    def with_raw_rewrite_rrf_pair(self, w_raw: float) -> dict[str, float]:
-        """原文/改写权重和为 1；HyDE/sparse 沿用配置（扫参时常用）。"""
-        w = max(0.0, min(1.0, float(w_raw)))
-        weights = self.m3_rrf_channel_weights()
-        weights["dense_raw"] = w
-        weights["dense"] = 1.0 - w
-        return weights
 
 
 @lru_cache

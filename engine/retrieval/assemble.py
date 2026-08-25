@@ -107,10 +107,7 @@ def assemble_hybrid_retriever(
             settings.RETRIEVAL_LLM_LISTWISE_KEEP_MAX,
         )
 
-    logger.info(
-        "Assembling bge_m3 retriever fusion_mode=%s",
-        settings.RETRIEVAL_FUSION_MODE,
-    )
+    logger.info("Assembling bge_m3 retriever (max_merge)")
     index = sparse_index or get_sparse_index()
     return M3HybridRetriever(
         dense=VectorRetriever(
@@ -123,16 +120,11 @@ def assemble_hybrid_retriever(
         reranker=reranker,
         fusion_size=settings.RETRIEVAL_FUSION_SIZE,
         rerank_candidates=rerank_n,
-        channel_weights=settings.m3_rrf_channel_weights(),
-        rrf_k=settings.RRF_K,
-        multi_channel_bonus=settings.RRF_MULTI_CHANNEL_BONUS,
         cn_tag_predict_max=settings.CN_TAG_PREDICT_MAX,
         cn_tag_final_max=settings.CN_TAG_FINAL_MAX,
         risk_id_cap=settings.RISK_ID_CAP,
         tag_backfill_top_cases=settings.TAG_BACKFILL_TOP_CASES,
         enable_hyde=bool(settings.RETRIEVAL_HYDE_ENABLED),
-        hyde_rerank=bool(settings.RETRIEVAL_HYDE_RERANK),
         enable_dense_raw=bool(settings.RETRIEVAL_DENSE_RAW_ENABLED),
-        fusion_mode=settings.RETRIEVAL_FUSION_MODE,
         llm_listwise=listwise,
     )
