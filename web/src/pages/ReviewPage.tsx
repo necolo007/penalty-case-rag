@@ -1,9 +1,21 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
-import { FileUp, Loader2, Scale, X } from "lucide-react";
+import { FileText, FileUp, Loader2, Scale, X } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ErrorAlert, TagChip } from "../components/ui";
 import { ThinkingPanel } from "../components/ThinkingPanel";
 import { reviewSession, useReviewSession } from "../lib/reviewSession";
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatHitScore(score?: number | null): string | null {
+  if (typeof score !== "number" || Number.isNaN(score)) return null;
+  if (score >= 0 && score <= 1) return `${(score * 100).toFixed(0)}%`;
+  return score.toFixed(3);
+}
 
 function riskTone(level?: string): string {
   const lv = (level || "").toLowerCase();
@@ -72,6 +84,7 @@ function HighlightedText({
 export function ReviewPage() {
   const s = useReviewSession();
   const [dragOver, setDragOver] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [activeSpan, setActiveSpan] = useState<number | null>(null);
   const [humanNote, setHumanNote] = useState("");
   const [humanSaved, setHumanSaved] = useState(false);
@@ -126,14 +139,28 @@ export function ReviewPage() {
 
   function onMaterialReview(e: FormEvent) {
     e.preventDefault();
+    if (pendingFile) {
+      void reviewSession.startMaterialFile(pendingFile);
+      return;
+    }
     void reviewSession.startMaterialReview();
+  }
+
+  function acceptPendingFile(file: File | undefined | null) {
+    if (!file) return;
+    setPendingFile(file);
+    reviewSession.setError(null);
+  }
+
+  function clearPendingFile() {
+    setPendingFile(null);
+    if (fileRef.current) fileRef.current.value = "";
   }
 
   function onDrop(e: DragEvent) {
     e.preventDefault();
     setDragOver(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) void reviewSession.startMaterialFile(file);
+    acceptPendingFile(e.dataTransfer.files?.[0]);
   }
 
   async function onHumanReviewComplete() {
@@ -262,33 +289,69 @@ export function ReviewPage() {
             onDragLeave={() => setDragOver(false)}
             onDrop={onDrop}
             className={[
-              "flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed px-4 py-8 text-sm",
+              "flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed px-4 py-8 text-sm transition",
               dragOver ? "border-primary bg-primary/5" : "border-border bg-slate-50/60",
+              pendingFile ? "border-primary/40 bg-primary/[0.03]" : "",
             ].join(" ")}
           >
-            <FileUp className="h-5 w-5 text-primary" />
-            <p className="text-muted-fg">拖拽上传 txt / docx / pdf / pptx，或点击选择文件</p>
-            <button
-              type="button"
-              className="text-sm font-semibold text-primary"
-              onClick={() => fileRef.current?.click()}
-            >
-              选择文件
-            </button>
+            {pendingFile ? (
+              <div className="flex w-full max-w-md items-center gap-3 rounded-xl border border-border/80 bg-white px-4 py-3 shadow-sm">
+                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                  <FileText className="h-5 w-5" aria-hidden />
+                </span>
+                <div className="min-w-0 flex-1 text-left">
+                  <p className="truncate text-sm font-semibold text-foreground">{pendingFile.name}</p>
+                  <p className="mt-0.5 text-xs text-muted-fg">
+                    {formatFileSize(pendingFile.size)} · 已选中，点击下方开始审查
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearPendingFile}
+                  disabled={s.loading}
+                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-muted-fg hover:bg-slate-100 hover:text-foreground disabled:opacity-50"
+                  aria-label="移除已选文件"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            ) : (
+              <>
+                <FileUp className="h-5 w-5 text-primary" />
+                <p className="text-muted-fg">拖拽上传 txt / docx / pdf / pptx，或点击选择文件</p>
+                <button
+                  type="button"
+                  className="text-sm font-semibold text-primary"
+                  onClick={() => fileRef.current?.click()}
+                >
+                  选择文件
+                </button>
+              </>
+            )}
+            {pendingFile ? (
+              <button
+                type="button"
+                className="text-xs font-medium text-primary"
+                onClick={() => fileRef.current?.click()}
+                disabled={s.loading}
+              >
+                更换文件
+              </button>
+            ) : null}
             <input
               ref={fileRef}
               type="file"
               accept=".txt,.docx,.pdf,.pptx"
               className="hidden"
               onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void reviewSession.startMaterialFile(f);
+                acceptPendingFile(e.target.files?.[0]);
+                e.target.value = "";
               }}
             />
           </div>
           <button
             type="submit"
-            disabled={s.loading}
+            disabled={s.loading || (!pendingFile && !s.material.trim())}
             className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-semibold text-white disabled:opacity-60"
           >
             {s.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Scale className="h-4 w-4" />}
@@ -372,6 +435,9 @@ export function ReviewPage() {
                       const item = raw as NonNullable<
                         NonNullable<typeof s.materialReport>["risk_sentences"]
                       >[number];
+                      const scoreLabel = formatHitScore(
+                        typeof item.hit_score === "number" ? item.hit_score : null,
+                      );
                       return (
                         <li
                           key={`${block.block_id}-${i}`}
@@ -383,10 +449,8 @@ export function ReviewPage() {
                             >
                               风险等级：{riskLabel(item.risk_level)}
                             </span>
-                            {typeof item.confidence === "number" ? (
-                              <span className="text-xs text-muted-fg">
-                                置信度 {(item.confidence * 100).toFixed(0)}%
-                              </span>
+                            {scoreLabel ? (
+                              <span className="text-xs text-muted-fg">案例相似度 {scoreLabel}</span>
                             ) : null}
                           </div>
                           <button

@@ -89,6 +89,10 @@ class RiskSentenceLocator:
         for sent in sentences:
             if sent.is_heading or len(sent.text) < self.min_sentence_len:
                 continue
+            # 切分失败时可能把整张信息公开表粘成超长「一句」；跳过以免全文标红
+            if len(sent.text) > 400:
+                logger.debug("skip oversized segment (%s chars)", len(sent.text))
+                continue
             if is_non_risk_boilerplate(sent.text):
                 continue
 

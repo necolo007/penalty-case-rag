@@ -19,6 +19,20 @@ _LIST_ITEM = re.compile(
 )
 # 行尾已是完整句，不再与下行粘连
 _HARD_LINE_END = frozenset("。！？!?")
+# 上一行以这些收尾时，更像「字段名/未写完的从句」，可与下行软合并
+_SOFT_CONTINUE_END = frozenset("，、：:（(「\"'《")
+# 信息公开表等字段名：短行标签，禁止与上下行粘成整篇
+_FORM_LABEL = re.compile(
+    r"("
+    r"信息公开表|决定书文号|当事人|姓名或名称|统一社会信用代码|"
+    r"主要违法违规事实|违法依据|处罚依据|处罚决定|"
+    r"处罚的种类|幅度及金额|作出处罚的日期|处罚机关"
+    r")\s*$"
+)
+# 软换行合并块上限：超过则强制断开，避免整表被当成一句导致全文高亮
+_MAX_SOFT_JOIN_CHARS = 220
+# 过短的行更像表头/字段值，不像句中折行
+_MIN_SOFT_JOIN_PREV_LEN = 18
 
 
 @dataclass
@@ -30,8 +44,11 @@ class Sentence:
     is_heading: bool = False
 
 
-def _should_soft_join(prev_line: str, next_line: str) -> bool:
-    """上一行未收尾、下一行不是新段/标题/列表时，视为排版软换行。"""
+def _should_soft_join(prev_line: str, next_line: str, *, buf_chars: int = 0) -> bool:
+    """上一行未收尾、下一行不是新段/标题/列表时，视为排版软换行。
+
+    不对「行政处罚信息公开表」一类短行表单做粘连，否则整篇会变成一句并全文标红。
+    """
     prev = prev_line.rstrip()
     nxt = next_line.strip()
     if not prev or not nxt:
@@ -39,6 +56,14 @@ def _should_soft_join(prev_line: str, next_line: str) -> bool:
     if prev[-1] in _HARD_LINE_END:
         return False
     if _HEADING.match(next_line) or _LIST_ITEM.match(next_line):
+        return False
+    if buf_chars >= _MAX_SOFT_JOIN_CHARS:
+        return False
+    if _FORM_LABEL.search(prev.strip()) or _FORM_LABEL.search(nxt):
+        return False
+    prev_len = len(prev.strip())
+    # 短行默认不粘；仅当上一行明确以逗号/冒号等未完成标点收尾时允许续写
+    if prev_len < _MIN_SOFT_JOIN_PREV_LEN and prev[-1] not in _SOFT_CONTINUE_END:
         return False
     return True
 
@@ -86,7 +111,9 @@ def _iter_logical_blocks(raw_text: str) -> list[tuple[int, int, int, bool]]:
             buf_end = line_end
             buf_is_heading = bool(_HEADING.match(line))
             prev_line = line
-        elif _should_soft_join(prev_line, line):
+        elif _should_soft_join(
+            prev_line, line, buf_chars=(buf_end - buf_start) if buf_start is not None else 0,
+        ):
             # 跨行续写：区间延伸到本行末（含中间的 \n）
             buf_end = line_end
             prev_line = line

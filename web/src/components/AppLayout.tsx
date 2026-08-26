@@ -208,7 +208,7 @@ export function AppLayout() {
           <Outlet />
         </main>
         <footer className="border-t border-border/60 py-4 text-center text-xs text-muted-fg">
-          保险监管处罚案例知识库 · 四路混合召回 + RRF + 精排
+          保险监管处罚案例知识库 · BGE-M3 多通道召回 + max_merge + 精排 / listwise
         </footer>
       </div>
     </div>

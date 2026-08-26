@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="保险监管处罚案例知识库与合规审查系统",
-    description="知识增强检索：四路混合召回 + RRF 融合 + Cross-Encoder 精排 + 可解释审查",
+    description="知识增强检索：BGE-M3 多通道召回 + max_merge 融合 + Cross-Encoder / listwise 精排 + 可解释审查（赛题粗类 R001–R011）",
     version="1.0.0",
     lifespan=lifespan,
 )

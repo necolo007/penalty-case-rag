@@ -75,3 +75,27 @@ def test_segmenter_keeps_list_items_apart():
     assert any("主要违法事实" in t for t in texts)
     assert any(t.startswith("1.") for t in texts)
     assert any(t.startswith("2.") for t in texts)
+
+
+def test_segmenter_does_not_glue_publicity_form():
+    """行政处罚信息公开表按行排版、无句号时，不得整表粘成一句导致全文高亮。"""
+    text = (
+        "贵州银保监局机关行政处罚信息公开表\n"
+        "行政处罚决定书文号\n"
+        "贵银保监罚决字〔2021〕18号\n"
+        "被处罚当事人姓名或名称\n"
+        "盛源祥保险代理有限公司贵州分公司\n"
+        "主要违法违规事实\n"
+        "2019年1月至12月期间，盛源祥保险代理有限公司贵州分公司虚列费用金额合计为9.71万元，"
+        "涉及银邮渠道车险业务。\n"
+        "行政处罚的依据\n"
+        "《保险法》第一百七十条\n"
+    )
+    sentences = segment_text(text)
+    texts = [s.text for s in sentences]
+    assert len(sentences) >= 4
+    assert not any(len(t) > 200 and "信息公开表" in t and "虚列费用" in t for t in texts)
+    assert any("虚列费用金额合计" in t for t in texts)
+    assert any(t == "行政处罚决定书文号" or "决定书文号" in t for t in texts)
+    for s in sentences:
+        assert _span_flat(text, s.start, s.end) == s.text

@@ -56,55 +56,61 @@ class MaterialReviewReport:
         payload = asdict(self)
         payload["summary"] = self.overall_suggestion
         payload["file_name"] = self.source_file
-        payload["risk_sentences"] = [
-            {
-                "text": sr.sentence_text,
-                "risk_level": sr.severity,
-                "suggestion": sr.suggestion,
-                "position_start": sr.position_start,
-                "position_end": sr.position_end,
-                "paragraph_idx": sr.paragraph_idx,
-                "risk_types": sr.risk_types,
-                "risk_type_ids": sr.risk_type_ids,
-                "compliance_reason": sr.compliance_reason,
-                "confidence": sr.confidence,
-                "detection_method": sr.detection_method,
-                "detection_reasons": sr.detection_reasons,
-                "retrieved_cases": sr.retrieved_cases,
-                # 报告单卡关键字段：取 Top1 命中案例的核心信息
-                "hit_case_id": (sr.retrieved_cases[0].get("case_id") if sr.retrieved_cases else None),
-                "hit_penalty_doc_no": (
-                    sr.retrieved_cases[0].get("penalty_doc_no") if sr.retrieved_cases else None
-                ),
-                "hit_party_name": (
-                    sr.retrieved_cases[0].get("party_name") if sr.retrieved_cases else None
-                ),
-                "case_key_field": (
-                    (sr.retrieved_cases[0].get("violation_behavior") or "")[:80]
-                    if sr.retrieved_cases else None
-                ),
-                "match_reason": (
-                    sr.retrieved_cases[0].get("match_reason") if sr.retrieved_cases else None
-                ),
-                "source_file": self.source_file or (
-                    sr.retrieved_cases[0].get("source_file") if sr.retrieved_cases else None
-                ),
-            }
-            for sr in self.sentence_reviews
-        ]
-        # 按段落粗分多案例块，便于同一材料多主体时分组展示
-        groups: dict[int, list[dict]] = {}
-        for item in payload["risk_sentences"]:
-            key = int(item.get("paragraph_idx") or 0)
-            groups.setdefault(key, []).append(item)
+
+        def _case_score(case: dict) -> float:
+            try:
+                return float(case.get("score") or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        risk_sentences: list[dict] = []
+        for sr in self.sentence_reviews:
+            # 案例列表按检索分降序，保证 Top1 = 最相似
+            cases = sorted(
+                list(sr.retrieved_cases or []),
+                key=_case_score,
+                reverse=True,
+            )
+            top = cases[0] if cases else {}
+            hit_score = _case_score(top) if cases else None
+            risk_sentences.append(
+                {
+                    "text": sr.sentence_text,
+                    "risk_level": sr.severity,
+                    "suggestion": sr.suggestion,
+                    "position_start": sr.position_start,
+                    "position_end": sr.position_end,
+                    "paragraph_idx": sr.paragraph_idx,
+                    "risk_types": sr.risk_types,
+                    "risk_type_ids": sr.risk_type_ids,
+                    "compliance_reason": sr.compliance_reason,
+                    "confidence": sr.confidence,
+                    "detection_method": sr.detection_method,
+                    "detection_reasons": sr.detection_reasons,
+                    "retrieved_cases": cases,
+                    "hit_score": hit_score,
+                    "hit_case_id": top.get("case_id"),
+                    "hit_penalty_doc_no": top.get("penalty_doc_no"),
+                    "hit_party_name": top.get("party_name"),
+                    "case_key_field": (top.get("violation_behavior") or "")[:80] or None,
+                    "match_reason": top.get("match_reason"),
+                    "source_file": self.source_file or top.get("source_file"),
+                }
+            )
+
+        # 风险句卡片按 Top1 案例相似度降序
+        risk_sentences.sort(
+            key=lambda x: float(x["hit_score"]) if x.get("hit_score") is not None else -1.0,
+            reverse=True,
+        )
+        payload["risk_sentences"] = risk_sentences
         payload["case_blocks"] = [
             {
-                "block_id": f"block-{idx + 1}",
-                "paragraph_idx": para_idx,
-                "label": f"风险段落 {idx + 1}",
-                "risk_sentences": items,
+                "block_id": "block-1",
+                "paragraph_idx": 0,
+                "label": "风险识别结果（按相似度）",
+                "risk_sentences": risk_sentences,
             }
-            for idx, (para_idx, items) in enumerate(sorted(groups.items()))
         ]
         return payload
 

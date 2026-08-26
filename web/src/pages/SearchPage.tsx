@@ -24,7 +24,7 @@ import { countHighRelevance } from "../lib/searchInsights";
 import { searchSession, useSearchSession } from "../lib/searchSession";
 import { RISK_ATLAS } from "../lib/riskAtlas";
 
-const CAPABILITY_TAGS = ["语义理解", "多路召回", "智能排序", "证据追溯"];
+const CAPABILITY_TAGS = ["语义改写", "BGE-M3 召回", "CE / listwise", "证据追溯"];
 
 const SUGGESTIONS = [
   { label: "销售误导", query: "向客户承诺保本保收益，夸大产品收益" },
@@ -132,7 +132,7 @@ export function SearchPage() {
               · {(s.data.took_ms / 1000).toFixed(2)}s
             </p>
           ) : (
-            <p className="text-xs text-muted-fg">语义理解 · 多路召回 · 证据可追溯</p>
+            <p className="text-xs text-muted-fg">改写 / HyDE · BGE-M3 · 证据可追溯</p>
           )}
         </header>
       )}
@@ -346,7 +346,7 @@ export function SearchPage() {
         <section className="rise-in rounded-3xl border border-border/60 bg-white/70 p-6 sm:p-8">
           <h2 className="font-display text-2xl font-semibold text-foreground">相似案例检索能力</h2>
           <p className="mt-2 max-w-2xl text-sm text-muted-fg">
-            从监管文书到业务话术，多路召回并精排相似处罚案例，输出可解释、可溯源的匹配证据。
+            从监管文书到业务话术，经 BGE-M3 多通道召回与精排返回相似处罚案例，输出可解释、可溯源的匹配证据。
           </p>
           <ul className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {CAPABILITIES.map(({ icon: Icon, title, desc }) => (

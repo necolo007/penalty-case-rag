@@ -242,6 +242,8 @@ export interface MaterialReviewResponse {
     hit_case_id?: string | null;
     hit_penalty_doc_no?: string | null;
     hit_party_name?: string | null;
+    /** Top1 命中案例检索分（精排后，通常约 0–1） */
+    hit_score?: number | null;
     case_key_field?: string | null;
     match_reason?: string | null;
     source_file?: string | null;

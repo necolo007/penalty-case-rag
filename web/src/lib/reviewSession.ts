@@ -168,6 +168,7 @@ export const reviewSession = {
   setMaterial: (material: string) => patch({ material }),
   setScene: (scene: string) => patch({ scene }),
   setTopK: (topK: number) => patch({ topK }),
+  setError: (error: string | null) => patch({ error }),
   setFeedback: (feedback: Record<string, FeedbackVerdict>) => patch({ feedback }),
   /** 提交人工复核到后端（agree / disagree / partial） */
   submitCaseFeedback: async (caseKey: string, verdict: FeedbackVerdict, note?: string) => {
@@ -266,7 +267,7 @@ export const reviewSession = {
   startMaterialReview: async () => {
     const material = state.material.trim();
     if (!material) {
-      patch({ error: "请粘贴待审查材料文本，或上传文件" });
+      patch({ error: "请先粘贴材料文本，或拖入/选择文件后再开始审查" });
       return;
     }
     const runId = ++runSeq;

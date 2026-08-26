@@ -12,7 +12,15 @@ const CATEGORY_TONES: Record<string, { bg: string; text: string; ring: string }>
   管理问题: { bg: "bg-teal-50", text: "text-teal-800", ring: "ring-teal-200" },
   合规问题: { bg: "bg-emerald-50", text: "text-emerald-800", ring: "ring-emerald-200" },
   其他: { bg: "bg-slate-50", text: "text-slate-700", ring: "ring-slate-200" },
-  // R00x atlas 大类兼容
+  // R00x atlas 大类
+  销售合规: { bg: "bg-sky-50", text: "text-sky-800", ring: "ring-sky-200" },
+  宣传材料: { bg: "bg-violet-50", text: "text-violet-800", ring: "ring-violet-200" },
+  费用财务: { bg: "bg-orange-50", text: "text-orange-800", ring: "ring-orange-200" },
+  售后服务: { bg: "bg-teal-50", text: "text-teal-800", ring: "ring-teal-200" },
+  信息合规: { bg: "bg-indigo-50", text: "text-indigo-800", ring: "ring-indigo-200" },
+  产品合规: { bg: "bg-emerald-50", text: "text-emerald-800", ring: "ring-emerald-200" },
+  内控培训: { bg: "bg-slate-50", text: "text-slate-800", ring: "ring-slate-200" },
+  // 旧别名兼容
   销售合规类: { bg: "bg-sky-50", text: "text-sky-800", ring: "ring-sky-200" },
   宣传材料类: { bg: "bg-violet-50", text: "text-violet-800", ring: "ring-violet-200" },
   财务费用类: { bg: "bg-rose-50", text: "text-rose-800", ring: "ring-rose-200" },
@@ -34,7 +42,7 @@ export function riskTone(riskIdOrTag: string): { bg: string; text: string; ring:
   if (cn?.category && CATEGORY_TONES[cn.category]) {
     return CATEGORY_TONES[cn.category];
   }
-  const id = riskIdOrTag.toUpperCase().match(/R00[1-8]/)?.[0];
+  const id = riskIdOrTag.toUpperCase().match(/R0(0[1-9]|1[01])/)?.[0];
   if (id && ID_TO_CATEGORY[id]) {
     return CATEGORY_TONES[ID_TO_CATEGORY[id]] ?? FALLBACK_TONES[0];
   }
@@ -47,7 +55,7 @@ export function riskTone(riskIdOrTag: string): { bg: string; text: string; ring:
 
 export function riskLabel(idOrTag: string): string {
   if (cnTagMeta(idOrTag)) return idOrTag;
-  const id = idOrTag.toUpperCase().match(/R00[1-8]/)?.[0];
+  const id = idOrTag.toUpperCase().match(/R0(0[1-9]|1[01])/)?.[0];
   if (id && RISK_NAME_MAP[id]) return RISK_NAME_MAP[id];
   return idOrTag;
 }

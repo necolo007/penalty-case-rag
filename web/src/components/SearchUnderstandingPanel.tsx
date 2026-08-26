@@ -48,8 +48,8 @@ function buildSteps(
       detail: keywords.length ? keywords.join(" · ") : "语义特征抽取中",
     },
     { id: "risk", label: "匹配风险类型（27类）", detail: risks },
-    { id: "pool", label: "检索历史案例", detail: pool },
-    { id: "rank", label: "精排完成", detail: `Top ${top} 结果` },
+    { id: "pool", label: "BGE-M3 多通道召回", detail: pool },
+    { id: "rank", label: "融合精排 / listwise", detail: `Top ${top} 结果` },
   ];
 }
 

@@ -263,7 +263,7 @@ RISK_SENTENCE_PROMPT = """你是保险合规审查专家。判断语句是否描
 - 仅引用法条、写「违反了《保险法》第X条」、处罚决定/复议诉讼告知等程序性内容 → is_risky=false
 - 描述具体违规行为或误导话术 → is_risky=true
 
-输出 JSON：{{"is_risky": true/false, "risk_type_id": "R001-R008 之一或空", "reason": "一句话理由"}}
+输出 JSON：{{"is_risky": true/false, "risk_type_id": "R001-R011 之一或空", "reason": "一句话理由"}}
 """
 
 

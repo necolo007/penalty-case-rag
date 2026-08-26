@@ -12,12 +12,12 @@ import type { StatsResponse } from "../api/types";
 import { ErrorAlert, LoadingBlock } from "../components/ui";
 import { RiskAtlasPanel } from "../components/RiskAtlasPanel";
 
-const CAPABILITY_PILLS = ["多源文档解析", "四路混合召回", "RRF融合精排", "证据可追溯"];
+const CAPABILITY_PILLS = ["多源文档解析", "BGE-M3 多通道召回", "max_merge · CE · listwise", "证据可追溯"];
 
 const CORE_CAPABILITIES = [
   {
     title: "相似案例检索",
-    body: "输入风险表述，基于混合召回与精排返回可解释的相似处罚案例、文号与处罚结果，支撑合规判断。",
+    body: "输入风险表述，经改写/HyDE 与 BGE-M3 召回、精排返回可解释的相似处罚案例、文号与处罚结果，支撑合规判断。",
     to: "/search",
     cta: "进入相似案例检索",
   },
@@ -29,7 +29,7 @@ const CORE_CAPABILITIES = [
   },
   {
     title: "风险标签字典",
-    body: "以真实案例统计呈现 R001–R008 标签体系，查看定义、典型表达与关联案例入口。",
+    body: "以真实案例统计呈现赛题 R001–R011 粗类体系，查看定义、典型表达与关联案例入口。",
     to: "/#risk-dict",
     cta: "查看标签字典",
   },
@@ -52,7 +52,7 @@ const HERO_SLIDES = [
     eyebrow: "保险监管处罚案例知识库",
     title: "案有所据，审有所依",
     subtitle: "相似案例检索 · 智能审查 · 风险标签一体贯通",
-    body: "文档解析入库、四路混合召回与精排归因，支撑整篇材料审查与单句风险研判，沉淀可追溯审查意见。",
+    body: "文档解析入库、BGE-M3 多通道召回与精排归因，支撑整篇材料审查与单句风险研判，沉淀可追溯审查意见。",
   },
 ] as const;
 

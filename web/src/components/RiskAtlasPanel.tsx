@@ -42,7 +42,9 @@ export function RiskAtlasPanel({
     || (tagTree?.some((t) => t.case_count > 0) ?? false);
 
   const level1 = useMemo(() => {
-    const fromTree = (tagTree || []).filter((t) => t.level === 1 || /^R00[1-8]$/.test(t.risk_type_id));
+    const fromTree = (tagTree || []).filter(
+      (t) => t.level === 1 || /^R0(0[1-9]|1[01])$/.test(t.risk_type_id),
+    );
     const ids = RISK_ATLAS.map((m) => m.id);
     return ids.map((id) => {
       const meta = RISK_ATLAS.find((m) => m.id === id)!;
@@ -100,8 +102,8 @@ export function RiskAtlasPanel({
     `${selectedMeta.name}：${selectedMeta.phrases[0] || selectedMeta.description.slice(0, 40)}`,
   );
 
-  // 轨道半径（百分比）：略放大，减少与中心气泡重叠
-  const orbit = 36;
+  // 轨道半径：11 类略放大，减少气泡重叠
+  const orbit = 38;
 
   return (
     <section className="surface overflow-hidden rounded-3xl">
