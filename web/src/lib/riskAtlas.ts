@@ -7,7 +7,6 @@ import {
   UserRound,
   Wallet,
   Building2,
-  Scale,
   PhoneCall,
   Percent,
   GraduationCap,
