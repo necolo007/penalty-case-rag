@@ -7,10 +7,10 @@
 | 任务 | 模块 | 说明 |
 |------|------|------|
 | 1 文档解析与抽取 | `pipeline/parser` + `pipeline/extraction` | PDF 分流；决定书/OCR：默认 `EXTRACTION_MODE=llm_first`（长字段 LLM 主抽，文号/机关正则回填）；`regex_first` 可回退 |
-| 2 保险筛选与标签 | `engine/classification` | 27 类中文风险标签（动态 few-shot）+ 赛题粗类 **R001–R011** |
+| 2 保险筛选与标签 | `engine/classification` | 28 类中文风险标签（规范 Prompt）+ 赛题粗类 **R001–R011** |
 | 3 相似案例检索 | `engine/retrieval` | LLM 改写 + HyDE → BGE-M3（`dense_raw` / `dense` / `dense_hyde` + `sparse`）→ **max_merge** → CE 精排 → **LLM listwise**；`legacy_four_way` 可回滚 |
 | 4 合规审查与归因 | `engine/review` | 风险句定位 + 逐句检索 + 可溯源审查意见 |
-| 5 样本 / 知识增强 | `engine/classification/fewshot` + `scripts/eval_task5_prompt_ab.py` | 评测集外 few-shot 库；提示词规范消融（裸标签列表 vs 判定标准，本地重跑，报告不入库） |
+| 5 样本 / 知识增强 | `scripts/eval_task5_prompt_ab.py` + 检索合成 | **bare vs full** Prompt 消融（主指标 LLM-as-Judge）；标准融合任务二 |
 
 ## 技术栈
 
@@ -71,9 +71,10 @@ Postgres 宿主机端口默认 **15432**（`PG_HOST_PORT`），Redis 默认 **65
 - **任务3 默认**：`RETRIEVAL_BACKEND=bge_m3` + `EMBEDDING_PROVIDER=local_bge_m3`；融合为 dense 族 max_merge，不是 RRF
 - **回滚四路**：`RETRIEVAL_BACKEND=legacy_four_way`（并视情况改 embedding + `make reindex-embed`）
 - **精排关闭**：`RERANKER_ENABLED=false`（按召回融合顺序截断）
-- **few-shot**：默认 `data/fewshot/risk_tag_fewshot_bank_multilabel.jsonl`；`make fewshot-import-multilabel`；勿用评测金标切 train 建库
-- **评测产物不入库**：`data/eval/label_eval*`、`judge_*`、`task5_prompt_ablation.*` 等由 `.gitignore` 忽略，本地 `make eval` / `scripts/eval_*.py` 重跑即可
-- **对齐生产评测**：`make eval`；便宜模式 `make eval-cheap LIMIT=50`；Judge：`scripts/eval_retrieval_judge.py`
+- **任务二**：规范 SYSTEM Prompt 打标（`RISK_CN_SYSTEM_PROMPT`）
+- **任务五**：样本增强 = bare vs full Prompt 消融（`make eval-task5-ab`）+ 检索合成样本
+- **评测产物不入库**：`data/eval/label_eval*`、`judge_*`、`label_judge_*`、`task5_prompt_ablation.*`、`task3_exp5_*` 等由 `.gitignore` 忽略，本地 `make eval` / `scripts/eval_*.py` 重跑即可；正式交付见仓库根目录 `deliver/`
+- **对齐生产评测**：`make eval`；便宜模式 `make eval-cheap LIMIT=50`；检索 Judge：`scripts/eval_retrieval_judge.py`；任务五消融：`make eval-task5-ab`（含标签 LLM-as-Judge）
 - **竞赛金标**：`make link-data` → `make import-gold` → `make reindex-embed`；隐藏答案放 `data/eval/quarantine/`
 - API + Redis + Worker 需同时运行，否则文档停在 `pending`
 - 切换 Embedding 模型后必须全量 `make reindex-embed`

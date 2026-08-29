@@ -164,3 +164,67 @@ def compute_retrieval_metrics(
         per_query.append(row)
 
     return _aggregate_metric_rows(per_query, k_values)
+
+
+def _harmonic_mean(a: float, b: float) -> float:
+    if a + b <= 0:
+        return 0.0
+    return 2 * a * b / (a + b)
+
+
+def _case_label_judge_row(
+    case_id: str,
+    pred_judgements: list[dict],
+    gold_coverage: list[dict],
+) -> dict:
+    pred_scores = [int(j.get("score") or 0) for j in pred_judgements]
+    gold_scores = [int(j.get("score") or 0) for j in gold_coverage]
+    pred_precision = (
+        sum(pred_scores) / len(pred_scores) if pred_scores else (1.0 if not gold_scores else 0.0)
+    )
+    gold_recall = (
+        sum(gold_scores) / len(gold_scores) if gold_scores else (1.0 if not pred_scores else 0.0)
+    )
+    case_f1 = _harmonic_mean(pred_precision, gold_recall)
+    full_accept = (
+        bool(pred_scores)
+        and bool(gold_scores)
+        and all(s == 1 for s in pred_scores)
+        and all(s == 1 for s in gold_scores)
+    ) or (not pred_scores and not gold_scores)
+    return {
+        "case_id": case_id,
+        "pred_tag_count": len(pred_scores),
+        "gold_tag_count": len(gold_scores),
+        "judge_pred_precision": round(pred_precision, 4),
+        "judge_gold_recall": round(gold_recall, 4),
+        "judge_f1": round(case_f1, 4),
+        "judge_full_accept": full_accept,
+        "pred_judgements": pred_judgements,
+        "gold_coverage": gold_coverage,
+    }
+
+
+def compute_label_judge_metrics(per_case: list[dict]) -> dict:
+    """从 LLM-as-Judge 逐案标签评审汇总任务五消融指标。"""
+    if not per_case:
+        return {"evaluated": 0, "scoring_mode": "label_judge_binary"}
+    n = len(per_case)
+    pred_prec = sum(c["judge_pred_precision"] for c in per_case) / n
+    gold_rec = sum(c["judge_gold_recall"] for c in per_case) / n
+    macro_f1 = sum(c["judge_f1"] for c in per_case) / n
+    full_accept = sum(1 for c in per_case if c["judge_full_accept"]) / n
+    return {
+        "evaluated": n,
+        "scoring_mode": "label_judge_binary",
+        "judge_pred_precision": round(pred_prec, 4),
+        "judge_gold_recall": round(gold_rec, 4),
+        "judge_f1": round(macro_f1, 4),
+        "judge_full_accept_rate": round(full_accept, 4),
+        "metrics_note": (
+            "pred_precision=预测标签被 Judge 判合理的比例；"
+            "gold_recall=金标标签被 Judge 判已覆盖的比例；"
+            "full_accept=两侧全部标签均判 1"
+        ),
+        "per_case": per_case,
+    }

@@ -20,13 +20,7 @@
     --predictions-out data/eval/predicted_risk_tags_822_llm.jsonl \\
     --output data/eval/label_eval_report_822_llm.json
 
-  # 动态 few-shot A/B：完整金标评测；示例库须来自评测集外（如 Excel）
-  python scripts/eval_labels.py --gold data/eval/gold_task2_822_cleaned.jsonl \\
-    --with-llm --no-fewshot --no-bert-score \\
-    --output data/eval/label_eval_task2_full_nofs.json
-  python scripts/eval_labels.py --gold data/eval/gold_task2_822_cleaned.jsonl \\
-    --with-llm --fewshot --fewshot-bank data/fewshot/risk_tag_fewshot_bank_excel.jsonl \\
-    --no-bert-score --output data/eval/label_eval_task2_full_excel_fs.json
+
 """
 
 from __future__ import annotations
@@ -75,22 +69,12 @@ def _llm_predict_cn_tags(
     llm: Any,
     violation_behavior: str,
     *,
-    fewshot: bool | None = None,
-    fewshot_bank: Any = None,
-    exclude_case_ids: list[str] | None = None,
-    fewshot_mode: str | None = None,
-    fewshot_fixed_ids: str | None = None,
     prompt_style: str | None = None,
 ) -> list[str]:
-    """用中文 27 类提示词直接预测 risk_tags（与入库 RiskTagger 共用）。"""
+    """用中文 28 类提示词直接预测 risk_tags（与入库 RiskTagger 共用）。"""
     return predict_cn_tags_with_llm(
         llm,
         violation_behavior,
-        fewshot=fewshot,
-        fewshot_bank=fewshot_bank,
-        exclude_case_ids=exclude_case_ids,
-        fewshot_mode=fewshot_mode,
-        fewshot_fixed_ids=fewshot_fixed_ids,
         prompt_style=prompt_style,
     )
 
@@ -342,29 +326,6 @@ async def main() -> None:
         help="逐案预测结果 jsonl 路径（含 pred/gold risk_tags）",
     )
     parser.add_argument(
-        "--fewshot", dest="fewshot", action="store_true", default=None,
-        help="强制启用动态 few-shot（默认跟随 FEWSHOT_ENABLED 配置）",
-    )
-    parser.add_argument(
-        "--no-fewshot", dest="fewshot", action="store_false",
-        help="关闭动态 few-shot，用于 A/B 对比",
-    )
-    parser.add_argument(
-        "--fewshot-bank", default=None,
-        help="覆盖示例库路径（默认取 FEWSHOT_BANK_PATH）",
-    )
-    parser.add_argument(
-        "--fewshot-mode",
-        default=None,
-        choices=["dynamic", "fixed"],
-        help="dynamic=按案检索；fixed=每案同一批固定示例（默认跟随 FEWSHOT_MODE）",
-    )
-    parser.add_argument(
-        "--fewshot-fixed-ids",
-        default=None,
-        help="固定样本 ID，逗号分隔（默认跟随 FEWSHOT_FIXED_IDS）",
-    )
-    parser.add_argument(
         "--prompt-style",
         default="full",
         choices=["full", "bare"],
@@ -390,45 +351,11 @@ async def main() -> None:
             raise SystemExit("--with-llm 需要配置 LLM_API_KEY")
         llm = create_llm_client(settings)
 
-    fewshot_bank = None
-    fewshot_info: dict[str, Any] = {"requested": args.fewshot}
-    if args.fewshot is not False:
-        from engine.classification.fewshot import FewShotBank, get_default_bank
-
-        try:
-            fewshot_bank = (
-                FewShotBank.from_jsonl(args.fewshot_bank)
-                if args.fewshot_bank
-                else get_default_bank()
-            )
-        except Exception as exc:  # noqa: BLE001 - few-shot 缺失不应阻断评测
-            print(f"warn: few-shot bank unavailable ({exc}); 继续用纯规则 Prompt")
-        if fewshot_bank is not None:
-            from core.config import get_settings
-
-            settings = get_settings()
-            mode = (args.fewshot_mode or getattr(settings, "FEWSHOT_MODE", "dynamic") or "dynamic").strip().lower()
-            fixed_ids = args.fewshot_fixed_ids or getattr(settings, "FEWSHOT_FIXED_IDS", "")
-            stats = fewshot_bank.stats()
-            fewshot_info.update({
-                "bank": stats["name"],
-                "examples": stats["examples"],
-                "tags_covered": stats["tags_covered"],
-                "dense_channel": stats["dense_channel"],
-                "mode": mode,
-                "fixed_ids": fixed_ids if mode == "fixed" else None,
-            })
-            print(
-                f"few-shot bank: {stats['name']} examples={stats['examples']} "
-                f"tags_covered={stats['tags_covered']} mode={mode}"
-                + (f" fixed_ids={fixed_ids}" if mode == "fixed" else "")
-            )
-
     pool = None
     tagger = None
     try:
         pool = await create_pool()
-        tagger = RiskTagger(pool, llm_client=llm, fewshot_bank=fewshot_bank)
+        tagger = RiskTagger(pool, llm_client=llm)
     except Exception as exc:  # noqa: BLE001
         if llm is None:
             raise
@@ -466,15 +393,9 @@ async def main() -> None:
             case_id = str(item.get("case_id") or "")
             if llm is not None:
                 try:
-                    # 排除自身：示例库与金标同源，否则等于把答案抄进提示词
                     pred_tags = _llm_predict_cn_tags(
                         llm,
                         text,
-                        fewshot=args.fewshot,
-                        fewshot_bank=fewshot_bank,
-                        exclude_case_ids=[case_id] if case_id else None,
-                        fewshot_mode=args.fewshot_mode,
-                        fewshot_fixed_ids=args.fewshot_fixed_ids,
                         prompt_style=args.prompt_style,
                     )
                     method = "llm_cn"
@@ -595,11 +516,6 @@ async def main() -> None:
         "prompt_style": getattr(args, "prompt_style", "full"),
         "llm_fail": llm_fail if args.with_llm else 0,
         "gold": str(gold_path),
-        "fewshot": (
-            {"enabled": False, "reason": "--no-fewshot"}
-            if args.fewshot is False
-            else {"enabled": fewshot_bank is not None, **fewshot_info}
-        ),
         "risk_tags": {
             "label_accuracy": round(exact / n, 4),
             "label_exact_match_accuracy": round(exact / n, 4),
@@ -678,7 +594,6 @@ async def main() -> None:
         "evaluated": report["evaluated"],
         "tagging_mode": report.get("tagging_mode"),
         "prompt_style": report.get("prompt_style"),
-        "fewshot": report.get("fewshot", {}).get("enabled"),
         "label_accuracy": report["risk_tags"]["label_accuracy"],
         "macro_f1": report["macro_f1"],
         "competition_id_macro_f1": report["competition_id_macro_f1"],

@@ -30,17 +30,23 @@ def normalize_lexical_weights(weights: Any) -> dict[str, float]:
 
 
 class BgeM3EmbeddingProvider(BaseEmbeddingProvider):
-    """BAAI/bge-m3 via FlagEmbedding.BGEM3FlagModel。"""
+    """本地 BGE-M3（FlagEmbedding.BGEM3FlagModel）"""
 
     def __init__(
         self,
-        model: str = "BAAI/bge-m3",
+        model: str | None = None,
         device: str = "cpu",
         *,
         batch_size: int = 8,
         max_length: int = 8192,
     ):
-        self._model_name = model
+        from core.config import DEFAULT_BGE_M3_DIR, get_settings, resolve_local_model_path
+
+        settings = get_settings()
+        raw = model or settings.BGE_M3_MODEL or DEFAULT_BGE_M3_DIR
+        self._model_name = resolve_local_model_path(
+            raw, what="BGE-M3", offline=settings.HF_HUB_OFFLINE,
+        )
         self.device = device
         self.batch_size = batch_size
         self.max_length = max_length
@@ -60,7 +66,7 @@ class BgeM3EmbeddingProvider(BaseEmbeddingProvider):
             except ImportError:
                 device = "cpu"
 
-            logger.info("Loading BGE-M3 %s on %s", self._model_name, device)
+            logger.info("Loading BGE-M3 from local path %s on %s", self._model_name, device)
             self._model = BGEM3FlagModel(
                 self._model_name,
                 use_fp16=(device == "cuda"),

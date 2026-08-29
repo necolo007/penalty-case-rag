@@ -96,8 +96,13 @@ class LocalEmbeddingProvider(BaseEmbeddingProvider):
     def __init__(self, model: str | None = None, device: str | None = None):
         from sentence_transformers import SentenceTransformer
 
+        from core.config import get_settings, resolve_local_model_path
+
         settings = get_settings()
-        self._model_name = model or settings.EMBEDDING_MODEL_LOCAL
+        raw = model or settings.EMBEDDING_MODEL_LOCAL
+        self._model_name = resolve_local_model_path(
+            raw, what="Embedding(local)", offline=settings.HF_HUB_OFFLINE,
+        )
         self.model = SentenceTransformer(
             self._model_name,
             device=device or settings.EMBEDDING_DEVICE,

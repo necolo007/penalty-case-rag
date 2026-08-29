@@ -7,15 +7,18 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
 
 from api.dependencies import get_generator, get_material_reviewer, get_pool, get_retriever
 from api.schemas.models import (
     FeedbackRequest,
     MaterialHumanReviewRequest,
+    MaterialReportExportRequest,
     MaterialReviewRequest,
     ReviewGenerateRequest,
 )
 from engine.retrieval.base import SearchQuery
+from engine.review.report_exporter import build_compliance_report_docx, default_export_filename
 from pipeline.parser.base import RawDocument
 from pipeline.parser.simple_parsers import PlainTextParser, PPTParser, WordParser
 
@@ -181,6 +184,46 @@ async def save_material_human_review(
         )
     except ValueError:
         raise HTTPException(404, detail="material not found") from None
+
+
+@router.post("/material/export-report")
+async def export_material_report(body: MaterialReportExportRequest):
+    """按配套《合规审查报告模板》导出 Word。
+
+    人工复核建议：仅当 human_review_done=true 且提供 human_note 时写入；
+    否则填「无」（建议先「复核完成」再导出）。
+    """
+    report = {
+        "material_id": body.material_id,
+        "scene": body.scene,
+        "source_file": body.source_file,
+        "file_name": body.file_name,
+        "summary": body.summary,
+        "overall_suggestion": body.overall_suggestion,
+        "risk_sentences": body.risk_sentences or [],
+    }
+    try:
+        content = build_compliance_report_docx(
+            report,
+            human_note=body.human_note,
+            human_review_done=body.human_review_done,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("export compliance report failed")
+        raise HTTPException(500, detail=f"export failed: {e}") from e
+
+    filename = default_export_filename(report)
+    # RFC 5987 文件名，兼容中文
+    from urllib.parse import quote
+
+    encoded = quote(filename)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"report.docx\"; filename*=UTF-8''{encoded}",
+        },
+    )
 
 
 @router.get("/{review_id}")

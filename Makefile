@@ -1,8 +1,8 @@
 .PHONY: install install-local-models db worker api test lint export \
 	docker-ocr-build docker-ocr-test docker-up docker-postgres-up \
 	link-data import-gold web-install web-dev web-build reindex-embed sync-dict \
-	eval eval-cheap eval-rerank eval-ab eval-all \
-	eval-task2-ab fewshot-import-excel fewshot-import-multilabel eval-task2-multilabel
+	eval eval-cheap eval-rerank eval-all \
+	eval-task2 eval-task5-ab
 
 # Windows / uv 环境下保证顶层包可导入
 export PYTHONPATH := .
@@ -66,44 +66,18 @@ eval:
 eval-rerank:
 	python scripts/eval_retrieval_local.py --split test --limit 30 --rerank --backend bge_m3 --llm-rewrite --llm-listwise
 
-eval-ab:
-	python scripts/compare_retrieval_backends.py --split test --limit 30 --rerank
-
 eval-all: eval eval-rerank
 
-# 任务2 few-shot：评测集外 Excel（禁止从金标切 train 建库）
+# 任务2 正式评测：规范 Prompt（full）
 GOLD ?= data/eval/gold_task2_822_cleaned.jsonl
-fewshot-import-excel:
-	python scripts/import_excel_fewshot_bank.py --keep-abstract --min-chars 4
+eval-task2:
+	python scripts/eval_labels.py --gold $(GOLD) --with-llm --no-bert-score \
+		--predictions-out data/eval/predicted_task2_full.jsonl \
+		--output data/eval/label_eval_task2_full.json
 
-# 任务2 多标签 few-shot 扩充库（一行多标签，覆盖 27 类）
-fewshot-import-multilabel:
-	python scripts/import_multilabel_fewshot_bank.py
-
-# 任务2 A/B：完整金标评测（不切 split）；few-shot 用 Excel 外库
-eval-task2-ab: fewshot-import-excel
-	python scripts/eval_labels.py --gold $(GOLD) --with-llm --no-fewshot --no-bert-score \
-		--predictions-out data/eval/predicted_task2_full_nofs.jsonl \
-		--output data/eval/label_eval_task2_full_nofs.json
-	python scripts/eval_labels.py --gold $(GOLD) --with-llm --fewshot \
-		--fewshot-bank data/fewshot/risk_tag_fewshot_bank_excel.jsonl --no-bert-score \
-		--predictions-out data/eval/predicted_task2_full_excel_fs.jsonl \
-		--output data/eval/label_eval_task2_full_excel_fs.json
-	python scripts/compare_label_reports.py \
-		--base data/eval/label_eval_task2_full_nofs.json \
-		--new data/eval/label_eval_task2_full_excel_fs.json \
-		--output data/eval/label_eval_task2_full_excel_vs_nofs.json
-
-# 任务2：多标签扩充库 + TOP_N=3 vs 无 few-shot
-eval-task2-multilabel: fewshot-import-multilabel
-	python scripts/eval_labels.py --gold $(GOLD) --with-llm --fewshot \
-		--fewshot-bank data/fewshot/risk_tag_fewshot_bank_multilabel.jsonl --no-bert-score \
-		--predictions-out data/eval/predicted_task2_full_multilabel_fs3.jsonl \
-		--output data/eval/label_eval_task2_full_multilabel_fs3.json
-	python scripts/compare_label_reports.py \
-		--base data/eval/label_eval_task2_full_nofs.json \
-		--new data/eval/label_eval_task2_full_multilabel_fs3.json \
-		--output data/eval/label_eval_task2_full_multilabel_vs_nofs.json
+# 任务5：提示词规范消融 bare vs full（主指标 LLM-as-Judge）
+eval-task5-ab:
+	python scripts/eval_task5_prompt_ab.py
 
 docker-up:
 	docker compose up -d postgres redis api worker

@@ -1,6 +1,6 @@
-"""Cross-Encoder 精排：BAAI/bge-reranker-v2-m3（本地，GPU 优先 CPU 降级）。
+"""Cross-Encoder 精排：本地 bge-reranker-v2-m3（GPU 优先 CPU 降级）。
 
-模型加载采用懒加载 + 线程池执行，避免阻塞事件循环。
+模型加载采用懒加载 + 线程池执行，避免阻塞事件循环；离线默认从 ../models 加载。
 """
 
 import asyncio
@@ -14,13 +14,19 @@ logger = logging.getLogger(__name__)
 class Reranker:
     def __init__(
         self,
-        model_name: str = "BAAI/bge-reranker-v2-m3",
+        model_name: str | None = None,
         device: str = "cpu",
         *,
         batch_size: int = 16,
         doc_max_chars: int = 1200,
     ):
-        self.model_name = model_name
+        from core.config import DEFAULT_RERANKER_DIR, get_settings, resolve_local_model_path
+
+        settings = get_settings()
+        raw = model_name or settings.RERANKER_MODEL or DEFAULT_RERANKER_DIR
+        self.model_name = resolve_local_model_path(
+            raw, what="Reranker", offline=settings.HF_HUB_OFFLINE,
+        )
         self.device = device
         self.batch_size = batch_size
         self.doc_max_chars = doc_max_chars
@@ -40,7 +46,7 @@ class Reranker:
             except ImportError:
                 device = "cpu"
 
-            logger.info("Loading reranker %s on %s", self.model_name, device)
+            logger.info("Loading reranker from local path %s on %s", self.model_name, device)
             self._model = FlagReranker(
                 self.model_name,
                 use_fp16=(device == "cuda"),

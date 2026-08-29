@@ -39,9 +39,12 @@ services:
       LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-local_bge_m3}
       RETRIEVAL_BACKEND: ${RETRIEVAL_BACKEND:-bge_m3}
+      BGE_M3_MODEL: ${BGE_M3_MODEL:-/models/bge-m3}
+      RERANKER_MODEL: ${RERANKER_MODEL:-/models/bge-reranker-v2-m3}
       RERANKER_DEVICE: ${RERANKER_DEVICE:-cpu}
       RERANKER_ENABLED: ${RERANKER_ENABLED:-true}
-      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${TRANSFORMERS_OFFLINE:-1}
       UPLOAD_DIR: /app/uploads
       DATA_DIR: /app/data
     ports:
@@ -54,6 +57,8 @@ services:
     volumes:
       - ./uploads:/app/uploads
       - ./data:/app/data
+      # 本地权重（相对 compose 文件：../models → 容器 /models）
+      - ../models:/models:ro
 
   # OCR Worker（扫描件）；文字版 PDF 可本机 make worker
   worker:

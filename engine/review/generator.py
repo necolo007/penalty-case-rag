@@ -13,7 +13,7 @@ from engine.classification.competition_label_map import (
     normalize_cn_tags,
 )
 from engine.llm.client import DeepSeekClient, ThinkingMode
-from engine.llm.prompts import REVIEW_PROMPT
+from engine.llm.prompts import MATERIAL_SUGGESTION_PROMPT, REVIEW_PROMPT
 from engine.retrieval.base import SearchResult
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,53 @@ class ReviewGenerator:
             result["risk_types"] = normalize_cn_tags(list(result["risk_types"]))
         return result
 
+    def generate_material_suggestion(
+        self,
+        material_text: str,
+        risk_items: list[dict],
+    ) -> str:
+        """对整份审查材料生成唯一整改建议（对象=材料原文，不是处罚案例）。"""
+        if not (material_text or "").strip():
+            return ""
+        if not risk_items:
+            return "未识别到明确风险语句；建议人工通读材料，避免收益承诺、绝对化表述与合同外利益诱导。"
+
+        blocks: list[str] = []
+        for i, item in enumerate(risk_items, 1):
+            text = (item.get("text") or "").strip()
+            tags = "、".join(item.get("risk_types") or []) or "未标注"
+            blocks.append(f"{i}. 风险类型：{tags}\n   原文：{text[:300]}")
+
+        prompt = MATERIAL_SUGGESTION_PROMPT.format(
+            material_text=material_text[:6000],
+            risk_blocks="\n".join(blocks),
+        )
+        try:
+            raw = self.llm.complete(
+                prompt,
+                max_tokens=700,
+                temperature=0.2,
+                json_mode=True,
+                thinking=ThinkingMode.DISABLED,
+            )
+            data = self._parse_response(raw)
+            suggestion = (data.get("suggestion") or "").strip()
+            if suggestion:
+                return suggestion
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Material suggestion generation failed: %s", e)
+
+        # 降级：合并句级「改材料」建议
+        parts = [
+            (item.get("suggestion") or "").strip()
+            for item in risk_items
+            if (item.get("suggestion") or "").strip()
+        ]
+        uniq = list(dict.fromkeys(parts))
+        if uniq:
+            return "\n".join(f"{i}. {s}" for i, s in enumerate(uniq, 1))
+        return "请针对材料中已标红的风险语句删除或改写违规表述，完整披露风险与除外责任，不以合同外利益诱导投保。"
+
     @staticmethod
     def _parse_response(response: str) -> dict:
         try:
@@ -99,7 +146,7 @@ class ReviewGenerator:
                 for c in cases[:5]
             ],
             "compliance_reason": "LLM 服务暂不可用，以下为四路检索直接返回的相似案例，请人工判断合规风险。",
-            "suggestion": "建议参照相似案例的处罚事由修改相关表述。",
+            "suggestion": "建议删除或改写待审查语句中可能构成销售误导、收益承诺或合同外利益的表述，并完整披露风险与除外责任。",
             "confidence": 0.3,
         }
 

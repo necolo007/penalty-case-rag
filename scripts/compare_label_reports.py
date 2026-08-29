@@ -1,9 +1,9 @@
-"""对比两份任务二评测报告，定位逐标签变化（few-shot A/B / 模型迭代报告用）。
+"""对比两份任务二评测报告，定位逐标签变化（模型迭代 / Prompt 消融用）。
 
 用法：
   python scripts/compare_label_reports.py \\
-    --base data/eval/label_eval_task2_test_nofs.json \\
-    --new  data/eval/label_eval_task2_test_fs.json
+    --base data/eval/label_eval_task5_prompt_bare.json \\
+    --new  data/eval/label_eval_task5_prompt_full.json
 """
 
 from __future__ import annotations
@@ -32,8 +32,8 @@ def _load(path: str) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="对比两份任务二标签评测报告")
-    parser.add_argument("--base", required=True, help="基线报告（如 --no-fewshot）")
-    parser.add_argument("--new", required=True, help="对比报告（如 --fewshot）")
+    parser.add_argument("--base", required=True, help="基线报告（如 bare）")
+    parser.add_argument("--new", required=True, help="对比报告（如 full）")
     parser.add_argument("--top", type=int, default=12, help="逐标签变化展示条数")
     parser.add_argument("--output", default=None, help="可选：写出 JSON 对比结果")
     args = parser.parse_args()
@@ -69,9 +69,9 @@ def main() -> None:
 
     result = {
         "base": {"file": args.base, "split": base.get("split"),
-                 "fewshot": base.get("fewshot"), "evaluated": base.get("evaluated")},
+                 "prompt_style": base.get("prompt_style"), "evaluated": base.get("evaluated")},
         "new": {"file": args.new, "split": new.get("split"),
-                "fewshot": new.get("fewshot"), "evaluated": new.get("evaluated")},
+                "prompt_style": new.get("prompt_style"), "evaluated": new.get("evaluated")},
         "overall": overall,
         "improved": [r for r in reversed(per_tag) if r["delta"] > 0][: args.top],
         "regressed": [r for r in per_tag if r["delta"] < 0][: args.top],

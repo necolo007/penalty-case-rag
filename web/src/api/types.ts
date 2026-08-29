@@ -220,6 +220,7 @@ export interface ReviewGenerateResponse {
 
 export interface MaterialReviewResponse {
   material_id?: string;
+  scene?: string | null;
   overall_risk?: string;
   /** 后端 overall_suggestion 的前端别名 */
   summary?: string;

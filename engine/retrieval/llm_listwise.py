@@ -131,16 +131,13 @@ class LlmListwiseReranker:
             ordered_ids = data.get("ordered_case_ids") or data.get("ordered") or []
             if not isinstance(ordered_ids, list):
                 ordered_ids = []
-            out = apply_listwise_order(
+            # 只重排/减枝，保留 CE/召回原始 score（0~1），勿用位次伪分覆盖
+            return apply_listwise_order(
                 candidates,
                 [str(x) for x in ordered_ids],
                 keep_min=keep_min,
                 keep_max=keep_max,
             )
-            for i, r in enumerate(out):
-                # 列表位次转为伪分，便于下游展示
-                r.score = float(keep_max - i)
-            return out
         except Exception as e:  # noqa: BLE001
             logger.warning("LLM listwise rerank failed, keep CE order: %s", e)
             return candidates[:keep_max]

@@ -44,7 +44,7 @@ class RetrieveResponse(BaseModel):
     )
     predicted_cn_tags: list[str] = Field(
         default_factory=list,
-        description="最终分类用 27 类中文标签",
+        description="最终分类用 28 类中文标签",
     )
     results: list[CaseResult]
     channel_stats: dict[str, int]
@@ -58,7 +58,7 @@ class SubmissionCase(BaseModel):
 
 
 class SubmissionResponse(BaseModel):
-    """严格对齐 retrieval_submission.jsonl schema；risk_type 为 27 类中文标签分号拼接"""
+    """严格对齐 retrieval_submission.jsonl schema；risk_type 为 28 类中文标签分号拼接"""
     question_id: Optional[str]
     risk_type: str
     retrieved_cases: list[SubmissionCase]
@@ -90,6 +90,19 @@ class MaterialHumanReviewRequest(BaseModel):
     status: str = Field("done", pattern="^(done|reviewing|pending)$")
 
 
+class MaterialReportExportRequest(BaseModel):
+    """前端当前审查结果 + 人工复核状态，用于填充合规审查报告模板。"""
+    material_id: Optional[str] = None
+    scene: Optional[str] = None
+    source_file: Optional[str] = None
+    file_name: Optional[str] = None
+    summary: Optional[str] = None
+    overall_suggestion: Optional[str] = None
+    risk_sentences: list[dict] = Field(default_factory=list)
+    human_note: Optional[str] = None
+    human_review_done: bool = False
+
+
 # ---------- 文档 / 案例 ----------
 
 class DocumentStatus(BaseModel):
@@ -114,35 +127,3 @@ class CasePatchRequest(BaseModel):
 
 class CaseExcludeRequest(BaseModel):
     reason: Optional[str] = None
-
-
-# ---------- 动态 few-shot（任务2 打标 / 任务5 长尾增强） ----------
-
-class FewShotPreviewRequest(BaseModel):
-    violation_behavior: str = Field(..., min_length=1, max_length=4000)
-    top_n: Optional[int] = Field(None, ge=1, le=12)
-    use_tag_hints: bool = True
-    exclude_case_ids: list[str] = Field(default_factory=list)
-    include_prompt: bool = Field(
-        False, description="返回最终注入 LLM 的完整 user prompt，便于口径核对",
-    )
-
-
-class FewShotExampleOut(BaseModel):
-    example_id: str
-    case_id: str
-    risk_tags: list[str]
-    violation_behavior: str
-    score: float
-    typicality: float
-    reason: str = Field("similar", description="similar=相似检索命中；tag_quota=长尾配额补位")
-    note: str = ""
-
-
-class FewShotPreviewResponse(BaseModel):
-    enabled: bool
-    bank: Optional[str] = None
-    tag_hints: list[str] = Field(default_factory=list)
-    examples: list[FewShotExampleOut] = Field(default_factory=list)
-    prompt_block: str = ""
-    user_prompt: Optional[str] = None

@@ -225,4 +225,42 @@ export const api = {
       `/review/material/${encodeURIComponent(materialId)}/human-review`,
       jsonInit("POST", body),
     ),
+
+  exportMaterialReport: async (body: {
+    material_id?: string;
+    scene?: string | null;
+    source_file?: string | null;
+    file_name?: string | null;
+    summary?: string;
+    overall_suggestion?: string;
+    risk_sentences?: MaterialReviewResponse["risk_sentences"];
+    human_note?: string;
+    human_review_done?: boolean;
+  }) => {
+    const res = await fetch(`${API_BASE}/review/material/export-report`, jsonInit("POST", body));
+    if (!res.ok) {
+      const text = await res.text();
+      throw new ApiError(res.status, text || `HTTP ${res.status}`, text);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") ?? "";
+    const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+    const plain = /filename="?([^";]+)"?/i.exec(cd);
+    let filename = "合规审查报告.docx";
+    if (star?.[1]) {
+      try {
+        filename = decodeURIComponent(star[1]);
+      } catch {
+        filename = star[1];
+      }
+    } else if (plain?.[1]) {
+      filename = plain[1];
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
 };

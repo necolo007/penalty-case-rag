@@ -73,11 +73,12 @@ class MaterialReviewReport:
             )
             top = cases[0] if cases else {}
             hit_score = _case_score(top) if cases else None
+            # 风险句卡片不重复展示整改建议（整份材料统一一条，见 overall_suggestion）
             risk_sentences.append(
                 {
                     "text": sr.sentence_text,
                     "risk_level": sr.severity,
-                    "suggestion": sr.suggestion,
+                    "suggestion": None,
                     "position_start": sr.position_start,
                     "position_end": sr.position_end,
                     "paragraph_idx": sr.paragraph_idx,
@@ -215,9 +216,19 @@ class MaterialReviewer:
         for rs in risk_sentences:
             sentence_reviews.append(await self._review_sentence(material_id, rs, scene))
 
-        # 4. 汇总
+        # 4. 汇总：整改对象=整份材料（唯一），不按案例逐条出整改
         overall_risk = self._overall_risk(sentence_reviews)
-        overall_suggestion = self._merge_suggestions(sentence_reviews)
+        risk_items = [
+            {
+                "text": r.sentence_text,
+                "risk_types": r.risk_types,
+                "suggestion": r.suggestion,
+            }
+            for r in sentence_reviews
+        ]
+        overall_suggestion = self.generator.generate_material_suggestion(
+            raw_text, risk_items,
+        )
 
         return MaterialReviewReport(
             material_id=material_id,

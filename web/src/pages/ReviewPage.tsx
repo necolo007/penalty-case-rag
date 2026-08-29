@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type ReactNode } from "react";
-import { FileText, FileUp, Loader2, Scale, X } from "lucide-react";
+import { Download, FileText, FileUp, Loader2, Scale, X } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
+import { ApiError, api } from "../api/client";
 import { ErrorAlert, TagChip } from "../components/ui";
 import { ThinkingPanel } from "../components/ThinkingPanel";
 import { reviewSession, useReviewSession } from "../lib/reviewSession";
@@ -11,36 +12,13 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function formatHitScore(score?: number | null): string | null {
-  if (typeof score !== "number" || Number.isNaN(score)) return null;
-  if (score >= 0 && score <= 1) return `${(score * 100).toFixed(0)}%`;
-  return score.toFixed(3);
-}
-
-function riskTone(level?: string): string {
-  const lv = (level || "").toLowerCase();
-  if (lv === "high" || lv === "高") return "bg-red-50 text-red-700 ring-red-200";
-  if (lv === "medium" || lv === "中") return "bg-amber-50 text-amber-800 ring-amber-200";
-  if (lv === "low" || lv === "低") return "bg-emerald-50 text-emerald-800 ring-emerald-200";
-  return "bg-slate-50 text-slate-700 ring-slate-200";
-}
-
-function riskLabel(level?: string): string {
-  const lv = (level || "").toLowerCase();
-  if (lv === "high") return "高";
-  if (lv === "medium") return "中";
-  if (lv === "low") return "低";
-  if (lv === "none") return "未发现";
-  return level || "—";
-}
-
 function HighlightedText({
   text,
   ranges,
   activeStart,
 }: {
   text: string;
-  ranges: Array<{ start: number; end: number; level?: string }>;
+  ranges: Array<{ start: number; end: number }>;
   activeStart?: number | null;
 }) {
   if (!text) return <p className="text-sm text-muted-fg">暂无原文</p>;
@@ -59,12 +37,7 @@ function HighlightedText({
         key={`m-${i}`}
         id={`risk-span-${r.start}`}
         className={[
-          "rounded px-0.5",
-          r.level === "high" || r.level === "高"
-            ? "bg-red-200/90 text-red-950"
-            : r.level === "medium" || r.level === "中"
-              ? "bg-amber-200/80 text-amber-950"
-              : "bg-emerald-100 text-emerald-950",
+          "rounded px-0.5 bg-amber-200/80 text-amber-950",
           active ? "ring-2 ring-primary" : "",
         ].join(" ")}
       >
@@ -88,6 +61,8 @@ export function ReviewPage() {
   const [activeSpan, setActiveSpan] = useState<number | null>(null);
   const [humanNote, setHumanNote] = useState("");
   const [humanSaved, setHumanSaved] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportHint, setExportHint] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [searchParams] = useSearchParams();
 
@@ -112,7 +87,6 @@ export function ReviewPage() {
       .map((x) => ({
         start: Number(x.position_start),
         end: Number(x.position_end),
-        level: x.risk_level,
       }));
   }, [s.materialReport]);
 
@@ -166,6 +140,33 @@ export function ReviewPage() {
   async function onHumanReviewComplete() {
     const ok = await reviewSession.saveMaterialHumanReview(humanNote);
     if (ok) setHumanSaved(true);
+  }
+
+  async function onExportReport() {
+    const report = s.materialReport;
+    if (!report) return;
+    setExporting(true);
+    setExportHint(null);
+    try {
+      await api.exportMaterialReport({
+        material_id: report.material_id,
+        scene: report.scene as string | undefined,
+        source_file: report.source_file,
+        file_name: report.file_name,
+        summary: report.summary,
+        overall_suggestion: report.overall_suggestion,
+        risk_sentences: report.risk_sentences,
+        human_note: humanSaved ? humanNote : undefined,
+        human_review_done: humanSaved,
+      });
+      if (!humanSaved) {
+        setExportHint("已导出。未先完成人工复核时，报告中「人工复核建议」为「无」。");
+      }
+    } catch (err) {
+      setExportHint(err instanceof ApiError ? err.message : "导出失败");
+    } finally {
+      setExporting(false);
+    }
   }
 
   function focusSpan(start?: number) {
@@ -408,21 +409,21 @@ export function ReviewPage() {
       {s.materialReport ? (
         <section className="space-y-4">
           <div className="surface rounded-3xl p-5 sm:p-6">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <h2 className="font-display text-2xl font-semibold">材料审查报告</h2>
-                <p className="mt-1 text-xs text-muted-fg">
-                  来源文件：{s.materialReport.file_name || s.materialReport.source_file || "粘贴文本"}
+            <div>
+              <h2 className="font-display text-2xl font-semibold">材料审查报告</h2>
+              <p className="mt-1 text-xs text-muted-fg">
+                来源文件：{s.materialReport.file_name || s.materialReport.source_file || "粘贴文本"}
+              </p>
+            </div>
+            {(s.materialReport.summary || s.materialReport.overall_suggestion) ? (
+              <div className="mt-4 rounded-xl border border-border/80 bg-slate-50 px-4 py-3">
+                <h3 className="text-sm font-semibold text-foreground">整改建议</h3>
+                <p className="mt-1 text-xs text-muted-fg">针对本份审查材料原文的统一改写/删改建议（非处罚案例整改）</p>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
+                  {s.materialReport.summary || s.materialReport.overall_suggestion}
                 </p>
               </div>
-              {s.materialReport.overall_risk ? (
-                <span
-                  className={`rounded-full px-3 py-1 text-xs font-semibold ring-1 ${riskTone(s.materialReport.overall_risk)}`}
-                >
-                  整体风险：{riskLabel(s.materialReport.overall_risk)}
-                </span>
-              ) : null}
-            </div>
+            ) : null}
           </div>
 
           <div className="grid gap-4 lg:grid-cols-12">
@@ -435,24 +436,11 @@ export function ReviewPage() {
                       const item = raw as NonNullable<
                         NonNullable<typeof s.materialReport>["risk_sentences"]
                       >[number];
-                      const scoreLabel = formatHitScore(
-                        typeof item.hit_score === "number" ? item.hit_score : null,
-                      );
                       return (
                         <li
                           key={`${block.block_id}-${i}`}
                           className="rounded-xl border border-border/80 bg-white px-4 py-3"
                         >
-                          <div className="mb-2 flex flex-wrap items-center gap-2">
-                            <span
-                              className={`rounded-md px-2 py-0.5 text-xs font-semibold ring-1 ${riskTone(item.risk_level)}`}
-                            >
-                              风险等级：{riskLabel(item.risk_level)}
-                            </span>
-                            {scoreLabel ? (
-                              <span className="text-xs text-muted-fg">案例相似度 {scoreLabel}</span>
-                            ) : null}
-                          </div>
                           <button
                             type="button"
                             className="text-left text-sm font-medium text-foreground hover:text-primary"
@@ -497,12 +485,6 @@ export function ReviewPage() {
                                 {item.match_reason || item.compliance_reason || "—"}
                               </dd>
                             </div>
-                            <div className="sm:col-span-2">
-                              <dt className="text-muted-fg">整改建议</dt>
-                              <dd className="mt-0.5 leading-relaxed text-slate-700">
-                                {item.suggestion || "—"}
-                              </dd>
-                            </div>
                           </dl>
                         </li>
                       );
@@ -534,6 +516,22 @@ export function ReviewPage() {
                 >
                   {s.feedbackSaving.human ? "保存中…" : humanSaved ? "已完成复核" : "复核完成"}
                 </button>
+                <button
+                  type="button"
+                  disabled={exporting || !s.materialReport}
+                  onClick={() => void onExportReport()}
+                  className="mt-3 ml-2 inline-flex min-h-11 items-center gap-2 rounded-xl border border-border bg-white px-5 text-sm font-semibold text-foreground hover:bg-slate-50 disabled:opacity-60"
+                >
+                  {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                  {exporting ? "导出中…" : "导出审查报告"}
+                </button>
+                {exportHint ? (
+                  <p className="mt-2 text-xs text-muted-fg">{exportHint}</p>
+                ) : (
+                  <p className="mt-2 text-xs text-muted-fg">
+                    建议先填写复核意见并点「复核完成」，再导出；否则报告中人工复核建议为「无」。
+                  </p>
+                )}
               </div>
             </div>
 
@@ -551,6 +549,7 @@ export function ReviewPage() {
           </div>
         </section>
       ) : null}
+
     </div>
   );
 }

@@ -1,7 +1,7 @@
 """风险类型初判：规则词典优先，未命中时 LLM 分类。
 
 返回 R001–R008，仅用于标签召回通道过滤；
-对外分类 / submission 请使用 competition_label_map 的 27 类中文标签。
+对外分类 / submission 请使用 competition_label_map 的 28 类中文标签。
 """
 
 import json

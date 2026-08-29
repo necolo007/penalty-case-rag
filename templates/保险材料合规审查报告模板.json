@@ -1,0 +1,45 @@
+{
+  "template_id": "insurance_material_review_v1",
+  "version": "v1.0",
+  "generated_at": "2026-08-27",
+  "fields": {
+    "material_id": "string",
+    "scene": "营销宣传|销售话术|短信|直播|培训|产品介绍|其他",
+    "source_file": "string|null",
+    "total_sentences": "int",
+    "risk_sentence_count": "int",
+    "overall_risk": "high|medium|low|none",
+    "overall_suggestion": "string",
+    "summary": "string",
+    "risk_sentences": [
+      {
+        "text": "string",
+        "risk_level": "high|medium|low",
+        "risk_types": [
+          "string"
+        ],
+        "risk_type_ids": [
+          "R00x"
+        ],
+        "compliance_reason": "string",
+        "confidence": "float",
+        "suggestion": "string",
+        "position_start": "int",
+        "position_end": "int",
+        "hit_case_id": "string|null",
+        "hit_penalty_doc_no": "string|null",
+        "hit_party_name": "string|null",
+        "hit_score": "float|null",
+        "match_reason": "string|null",
+        "retrieved_cases": "list[CaseResult]"
+      }
+    ],
+    "human_review": {
+      "status": "pending|confirmed|revised|rejected",
+      "reviewer": "string",
+      "comment": "string",
+      "final_conclusion": "string",
+      "reviewed_at": "ISO8601"
+    }
+  }
+}

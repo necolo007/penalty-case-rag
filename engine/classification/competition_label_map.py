@@ -1,8 +1,8 @@
-"""27 类中文 risk_tag 与赛题 R001–R011 的映射（双层）。
+"""28 类中文 risk_tag 与赛题 R001–R011 的映射（双层）。
 
-第一层（官方输出）：27 类中文细标签 —— 展示、提交、评测、训练。
+第一层（官方输出）：28 类中文细标签 —— 展示、提交、评测、训练。
 第二层（内部召回）：写入 risk_type_dictionary.csv 中的 risk_type_R00；
-  「编制虚假财务资料」(R006) 无独立细标签，归一为「其他」，禁止落到虚列(R005)。
+  「编制虚假财务资料」为独立细标签，对应 R006（禁止落到虚列 R005）。
 
 CSV 典型行为/排除边界参与关键词预测与消歧；risk_type / risk_type_R00 为竞赛粗类。
 """
@@ -41,6 +41,7 @@ CANONICAL_CN_TAGS: tuple[str, ...] = (
     "委托无资质机构销售",
     "未按规定使用费率条款",
     "客户信息不真实",
+    "编制虚假财务资料",
     "其他",
 )
 
@@ -74,6 +75,7 @@ CN_TAG_TO_COMPETITION: dict[str, str] = {
     "客户信息不真实": "R008",
     "未按规定使用费率条款": "R009",
     "培训材料违规": "R010",
+    "编制虚假财务资料": "R006",
     "其他": "R011",
 }
 
@@ -105,6 +107,7 @@ CN_TAG_RISK_TYPE: dict[str, str] = {
     "客户信息不真实": "客户信息与隐私违规",
     "未按规定使用费率条款": "产品费率及合同执行违规",
     "培训材料违规": "内部管理与培训违规",
+    "编制虚假财务资料": "编制虚假财务资料",
     "其他": "其他类型违规行为",
 }
 
@@ -114,8 +117,7 @@ COMPETITION_TO_CN_DEFAULT: dict[str, str] = {
     "R003": "虚假宣传",
     "R004": "代理人管理不到位",
     "R005": "虚列费用套取资金",
-    # R006 编制虚假财务资料：无独立 27 类细标签，默认「其他」（禁止落到虚列 R005）
-    "R006": "其他",
+    "R006": "编制虚假财务资料",
     "R007": "回访违规",
     "R008": "客户信息不真实",
     "R009": "未按规定使用费率条款",
@@ -132,10 +134,13 @@ CN_TAG_ALIASES: dict[str, list[str]] = {
     "宣传材料或产品说明会数据资料不真实": ["虚假宣传", "产品说明会违规"],
     "销售人员执业登记管理不规范": ["代理人管理不到位"],
     "虚构/虚挂中介业务套取费用": ["虚列费用套取资金"],
-    # 编制虚假财务资料 ≠ 虚列套取；无细类时归「其他」
-    "编制虚假财务资料": ["其他"],
-    "编制虚假业务资料": ["其他"],
-    "编制虚假财务数据": ["其他"],
+    # 编制虚假财务资料 ≠ 虚列套取；归一到独立细类 R006
+    "编制虚假财务资料": ["编制虚假财务资料"],
+    "编制虚假业务资料": ["编制虚假财务资料"],
+    "编制虚假财务数据": ["编制虚假财务资料"],
+    "编制提交虚假报表": ["编制虚假财务资料"],
+    "业务财务数据不真实": ["编制虚假财务资料"],
+    "财务数据不真实": ["编制虚假财务资料"],
     "保险代理人侵害消费者权益": ["其他"],
     "利用开展保险业务牟取不正当利益": ["其他"],
     "销售违规": ["销售误导"],
@@ -287,7 +292,7 @@ def _extract_phrases_from_typical(text: str) -> list[str]:
 
 @lru_cache(maxsize=1)
 def load_cn_tag_catalog() -> list[dict[str, str]]:
-    """从 CSV 读取 27 类标签目录（含典型行为/排除边界/监管依据/R00x）；失败时回退内置常量。"""
+    """从 CSV 读取 28 类标签目录（含典型行为/排除边界/监管依据/R00x）；失败时回退内置常量。"""
     if _DICT_PATH.exists():
         rows: list[dict[str, str]] = []
         with _DICT_PATH.open(encoding="utf-8-sig") as f:
@@ -395,7 +400,7 @@ def competition_ids_to_cn_tags(competition_ids: list[str] | None,
 
 
 def normalize_cn_tags(tags: list[str] | None) -> list[str]:
-    """将任意标签/别名/R00x/复合写法归一为 27 类标准标签。"""
+    """将任意标签/别名/R00x/复合写法归一为 28 类标准标签。"""
     return [r["normalized_label"] for r in normalize_cn_tags_detailed(tags)
             if r["status"] == "ok" and r.get("normalized_label")]
 
@@ -467,8 +472,6 @@ _AGENT_ARCHIVE_SIGN_RE = re.compile(
 _OTHER_HINT_RE = re.compile(
     r"任职资格|未取得.{0,16}核准|牟取不正当利益|"
     r"保险资金委托|投资理财|问题档案|自查报告|"
-    r"业务财务数据不真实|编制提交虚假报表|编制虚假报表|"
-    r"编造虚假(?:资料|报表)|业务资料不真实|财务数据不真实|"
     r"内控制度.{0,8}不到位|拒绝.{0,8}监督检查|妨碍监督检查|"
     r"唆使.{0,12}代理人.{0,16}诚信|隐瞒事实"
 )
@@ -612,8 +615,14 @@ def refine_cn_tags(tags: list[str] | None, violation_behavior: str = "") -> list
         xulie_without_misuse = has_xulie and not has_misuse
         if accounting_only or xulie_without_misuse:
             out = [t for t in out if t != "虚列费用套取资金"]
-            if "其他" not in out:
-                out.append("其他")
+            if "编制虚假财务资料" not in out:
+                out.append("编制虚假财务资料")
+
+    if blob and _FAKE_REPORT_ONLY_RE.search(blob):
+        has_xulie = bool(_FAKE_EXPENSE_DETAIL_RE.search(blob))
+        has_misuse = bool(_SIPHON_OR_MISUSE_RE.search(blob))
+        if not (has_xulie and has_misuse) and "编制虚假财务资料" not in out:
+            out.append("编制虚假财务资料")
 
     if blob and _ABS_EXPR_RE.search(blob) and "绝对化表述" not in out:
         out.append("绝对化表述")

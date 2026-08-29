@@ -108,7 +108,7 @@ def _build_case_filters(
         clauses.append(f"c.file_id = ${len(params)}")
 
     if risk_type:
-        # 支持 27 类中文标签或 R00x；中文优先匹配 risk_tags
+        # 支持 28 类中文标签或 R00x；中文优先匹配 risk_tags
         rt = risk_type.strip()
         if rt.upper().startswith("R0") and len(rt) <= 5:
             params.append(rt.upper())
@@ -154,15 +154,10 @@ async def _ensure_tags_and_embedding(pool, case_id: str, row) -> dict:
             from engine.classification.risk_tagger import RiskTagger
             from engine.llm.client import create_llm_client
 
-            from api.dependencies import get_fewshot_bank
-
             settings = _gs()
             llm = create_llm_client(settings) if (settings.LLM_API_KEY or "").strip() else None
-            tagger = RiskTagger(pool, llm_client=llm, fewshot_bank=get_fewshot_bank())
-            # 排除自身：示例库可能已收录该案例，避免用答案当提示
-            tags = await tagger.classify(
-                row["violation_behavior"], exclude_case_ids=[case_id],
-            )
+            tagger = RiskTagger(pool, llm_client=llm)
+            tags = await tagger.classify(row["violation_behavior"])
             risk_tags = tags.get("display_tags") or []
             risk_type_ids = tags.get("competition_ids") or risk_type_ids
             await pool.execute(

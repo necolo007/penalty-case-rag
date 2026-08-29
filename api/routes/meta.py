@@ -24,7 +24,7 @@ async def list_tags(pool=Depends(get_pool)):
 
 @router.get("/tags/cn")
 async def list_cn_tags():
-    """配套 27 类中文风险标签（最终分类 / 提交用）"""
+    """配套 28 类中文风险标签（最终分类 / 提交用）"""
     return load_cn_tag_catalog()
 
 

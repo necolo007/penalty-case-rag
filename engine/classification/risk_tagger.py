@@ -1,8 +1,6 @@
-"""风险标签归类：默认与任务二评测对齐（中文 27 类 LLM + refine）。
+"""风险标签归类：默认与任务二评测对齐（中文 28 类 LLM + refine）。
 
-打标 Prompt = 27 类规则 + 标签消歧 + 动态 few-shot 示例（按待判事实检索）。
-few-shot 由 engine.classification.fewshot 提供，示例库缺失时自动退回纯规则。
-
+打标 Prompt = 28 类规则 + 标签消歧（纯规则 SYSTEM）。
 无 LLM 时回退：三级词典规则 + 中文关键词 + refine。
 """
 
@@ -11,7 +9,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Iterable
 from typing import Any
 
 import asyncpg
@@ -22,11 +19,9 @@ from engine.classification.competition_label_map import (
     predict_cn_tags_by_keywords,
     refine_cn_tags,
 )
-from engine.classification.fewshot import FewShotBank, build_fewshot_block
 from engine.classification.tag_mapper import map_internal_to_competition
 from engine.llm.client import DeepSeekClient, ThinkingMode
 from engine.llm.prompts import (
-    RISK_CN_FEWSHOT_SECTION,
     RISK_CN_SYSTEM_PROMPT,
     RISK_CN_SYSTEM_PROMPT_BARE,
     RISK_CN_USER_PROMPT,
@@ -57,77 +52,26 @@ def build_cn_tag_system_prompt(*, prompt_style: str | None = None) -> str:
     return RISK_CN_SYSTEM_PROMPT
 
 
-def build_cn_tag_user_prompt(
-    violation_behavior: str,
-    *,
-    fewshot: bool | None = None,
-    fewshot_bank: FewShotBank | None = None,
-    exclude_case_ids: Iterable[str] | None = None,
-    fewshot_mode: str | None = None,
-    fewshot_fixed_ids: str | None = None,
-) -> str:
-    """组装 27 类打标 user prompt：仅 few-shot（可选）+ 待判事实。"""
-    from core.config import get_settings
-
-    settings = get_settings()
+def build_cn_tag_user_prompt(violation_behavior: str) -> str:
+    """组装 28 类打标 user prompt：待判事实。"""
     text = (violation_behavior or "").strip()
-    use_fewshot = settings.FEWSHOT_ENABLED if fewshot is None else bool(fewshot)
-    mode = (fewshot_mode or getattr(settings, "FEWSHOT_MODE", "dynamic") or "dynamic").strip().lower()
-
-    block = ""
-    if use_fewshot:
-        tag_hints = None
-        if mode != "fixed":
-            # 门控与配额都依赖关键词初判；门控开启时即使 TAG_HINTS=false 也要算 hints
-            need_hints = settings.FEWSHOT_TAG_HINTS or settings.FEWSHOT_REQUIRE_COVERED_HINT
-            tag_hints = (
-                predict_cn_tags_by_keywords(text, max_tags=settings.CN_TAG_PREDICT_MAX)
-                if need_hints
-                else None
-            )
-        examples = build_fewshot_block(
-            text,
-            bank=fewshot_bank,
-            tag_hints=tag_hints,
-            exclude_case_ids=exclude_case_ids,
-            mode=mode,
-            fixed_ids=fewshot_fixed_ids,
-        )
-        if examples:
-            block = RISK_CN_FEWSHOT_SECTION.format(examples=examples) + "\n"
-
-    return RISK_CN_USER_PROMPT.format(
-        fewshot_block=block,
-        violation_behavior=text[:3500],
-    )
+    return RISK_CN_USER_PROMPT.format(violation_behavior=text[:3500])
 
 
 def predict_cn_tags_with_llm(
     llm: Any,
     violation_behavior: str,
     *,
-    fewshot: bool | None = None,
-    fewshot_bank: FewShotBank | None = None,
-    exclude_case_ids: Iterable[str] | None = None,
-    fewshot_mode: str | None = None,
-    fewshot_fixed_ids: str | None = None,
     prompt_style: str | None = None,
 ) -> list[str]:
-    """中文 27 类打标（评测 --with-llm / 入库 RiskTagger 共用，含 refine + 标签上限）。"""
+    """中文 28 类打标（评测 --with-llm / 入库 RiskTagger 共用，含 refine + 标签上限）。"""
     from core.config import get_settings
 
     text = (violation_behavior or "").strip()
     if not text:
         return ["其他"]
     resp = llm.complete(
-        build_cn_tag_user_prompt(
-            text,
-            fewshot=fewshot,
-            fewshot_bank=fewshot_bank,
-            exclude_case_ids=exclude_case_ids,
-            fewshot_mode=fewshot_mode,
-            fewshot_fixed_ids=fewshot_fixed_ids,
-        ),
+        build_cn_tag_user_prompt(text),
         system=build_cn_tag_system_prompt(prompt_style=prompt_style),
         max_tokens=400,
         temperature=0.1,
@@ -148,13 +92,9 @@ class RiskTagger:
         self,
         pool: asyncpg.Pool,
         llm_client: DeepSeekClient | None = None,
-        *,
-        fewshot_bank: FewShotBank | None = None,
     ):
         self.pool = pool
         self.llm = llm_client
-        # 显式注入用于服务端复用单例；None 时按配置懒加载全局示例库
-        self.fewshot_bank = fewshot_bank
         self._dict_cache: list[dict] | None = None
 
     async def _load_dict(self) -> list[dict]:
@@ -174,7 +114,6 @@ class RiskTagger:
         violation_behavior: str,
         *,
         prefer_llm: bool = True,
-        exclude_case_ids: Iterable[str] | None = None,
     ) -> dict:
         from core.config import get_settings
 
@@ -186,12 +125,7 @@ class RiskTagger:
 
         if prefer_llm and self.llm is not None and text.strip():
             try:
-                display_tags = predict_cn_tags_with_llm(
-                    self.llm,
-                    text,
-                    fewshot_bank=self.fewshot_bank,
-                    exclude_case_ids=exclude_case_ids,
-                )
+                display_tags = predict_cn_tags_with_llm(self.llm, text)
                 method = "llm_cn"
             except Exception as e:  # noqa: BLE001
                 logger.warning("LLM CN tag classify failed, fallback to rules: %s", e)

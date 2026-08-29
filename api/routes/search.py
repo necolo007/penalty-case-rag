@@ -42,7 +42,7 @@ def _to_search_query(req: RetrieveRequest) -> SearchQuery:
 
 
 def _finalize_cn_tags(req: RetrieveRequest, retrieval, llm_risk_names: list[str] | None = None) -> list[str]:
-    """最终对外分类：27 类中文标签；R00x 仅兜底。"""
+    """最终对外分类：28 类中文标签；R00x 仅兜底。"""
     from core.config import get_settings
     settings = get_settings()
     case_tags = [
@@ -78,7 +78,7 @@ async def _build_submission(req: RetrieveRequest, retriever, generator,
                 reasons[a["case_id"]] = a["similarity_reason"]
 
     cn_tags = _finalize_cn_tags(req, retrieval, llm_risk_names)
-    # 始终以 27 类中文标签提交；competition 风格仅影响是否允许 LLM 长描述，最终仍归一化
+    # 始终以 28 类中文标签提交；competition 风格仅影响是否允许 LLM 长描述，最终仍归一化
     risk_type = format_submission_risk_type(
         cn_tags=cn_tags,
         competition_ids=retrieval.predicted_risk_ids,
